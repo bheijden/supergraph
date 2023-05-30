@@ -1,16 +1,18 @@
 [tool.poetry]
-name = "eagerx_template"
+name = "supergraph"
 version = "0.0.0"
 license = "Apache2.0"
-description = "Template for creating EAGERx packages."
-authors = ["Jelle Luijkx <j.d.luijkx@tudelft.nl>", "Bas van der Heijden <d.s.vanderheijden@tudelft.nl>"]
-homepage = "https://github.com/eager-dev/eagerx_template_private"
-repository = "https://github.com/eager-dev/eagerx_template_private"
-documentation = "https://eagerx.readthedocs.io/en/master/"
+description = "Supergraph compiler."
+authors = ["Bas van der Heijden <d.s.vanderheijden@tudelft.nl>"]
+homepage = "https://github.com/bheijden/supergraph"
+repository = "https://github.com/bheijden/supergraph"
+documentation = "https://github.com/bheijden/supergraph"
 
 [tool.poetry.dependencies]
-python = "^3.6.2"
-eagerx = "^0.1.33"
+python = "^3.8"
+networkx = "^2.8.8"
+matplotlib = "^3.7.1"
+numpy = "^1.24.3"
 
 [tool.poetry.dev-dependencies]
 black = "^22.1.0"
@@ -26,7 +28,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.semantic_release]
 version_variable = [
-    "eagerx_template/__init__.py:__version__",
+    "supergraph/__init__.py:__version__",
     "pyproject.toml:version"
 ]
 branch = "master"
