@@ -13,6 +13,7 @@ python = "^3.8"
 networkx = "^2.8.8"
 matplotlib = "^3.7.1"
 numpy = "^1.24.3"
+tqdm = "^4.65.0"
 
 [tool.poetry.dev-dependencies]
 black = "^22.1.0"
