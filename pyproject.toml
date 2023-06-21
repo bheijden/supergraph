@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "supergraph"
-version = "0.0.0"
+version = "0.0.1"
 license = "Apache2.0"
 description = "Supergraph compiler."
 authors = ["Bas van der Heijden <d.s.vanderheijden@tudelft.nl>"]
