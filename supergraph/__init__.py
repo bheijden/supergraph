@@ -9,7 +9,6 @@ from collections import deque
 import numpy as np
 import supergraph.open_colors as oc
 import networkx as nx
-import matplotlib.pyplot as plt
 
 
 edge_data = {"color": oc.ecolor.used, "linestyle": "-", "alpha": 1.}
@@ -25,6 +24,7 @@ def plot_graph(ax, _G,
                arrowsize=10,
                arrowstyle="->",
                connectionstyle="arc3,rad=0.1"):
+    import matplotlib.pyplot as plt
     if ax is None:
         fig, ax = plt.subplots(nrows=1)
         fig.set_size_inches(12, 5)
@@ -331,6 +331,7 @@ def run_excalidraw_example():
     # G0_partition_onehot = {k: [topo_to_onehot([G0.nodes[n] for n in g], kind_to_index) for g in G0_partition_topo[k]] for k in G0_partition_topo.keys()}
 
     # Create new plot
+    import matplotlib.pyplot as plt
     fig, axes = plt.subplots(nrows=3)
     fig.set_size_inches(12, 15)
     plot_graph(axes[0], G0)

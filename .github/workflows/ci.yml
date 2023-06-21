@@ -29,8 +29,6 @@ jobs:
       #----------------------------------------------
       - name: Check out repository
         uses: actions/checkout@v2
-        with:
-          token: ${{ secrets.GH_TOKEN }}
       - name: Set up python ${{ matrix.python-version }}
         id: setup-python
         uses: actions/setup-python@v2
