@@ -800,7 +800,7 @@ def evaluate_supergraph(G: nx.DiGraph, S: nx.DiGraph):
     # assert check_monomorphism(S, G, monomorphism)
 
 
-def match_supergraph_iter(G, S, front: Set = None, generations_S: List[List[Any]] = None, matched_in_degree: Dict[Any, int] = None):
+def match_supergraph_iter(G, S, front: Set = None, generations_S: List[List[Any]] = None, matched_in_degree: Dict[Any, int] = None, delta_matched_in_degree: Dict[Any, int] = None):
     # Get host generations
     generations_S = list(nx.topological_generations(S)) if generations_S is None else generations_S
 
@@ -809,6 +809,7 @@ def match_supergraph_iter(G, S, front: Set = None, generations_S: List[List[Any]
 
     # Prepare matched in_degree counter for motif
     matched_in_degree = {n: 0 for n in G} if matched_in_degree is None else matched_in_degree
+    delta_matched_in_degree = {} if delta_matched_in_degree is None else delta_matched_in_degree
 
     # Iterate over generations
     i = 0
@@ -830,6 +831,7 @@ def match_supergraph_iter(G, S, front: Set = None, generations_S: List[List[Any]
 
                         for n_G_child in G.successors(n_G):
                             matched_in_degree[n_G_child] += 1
+                            delta_matched_in_degree[n_G_child] = delta_matched_in_degree.get(n_G_child, 0) + 1
                             if G.in_degree(n_G_child) == matched_in_degree[n_G_child]:
                                 new_front.add(n_G_child)
 
@@ -850,191 +852,6 @@ def match_supergraph_iter(G, S, front: Set = None, generations_S: List[List[Any]
     return
 
 
-# def grow_supergraph(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtrack: int = 3):
-    # # Get & sort leaf nodes
-    # leafs_G = {n: data for n, data in G.nodes(data=True) if data["kind"] == leaf_kind}
-    # leafs_G = [k for k in sorted(leafs_G.keys(), key=lambda k: leafs_G[k]["seq"])]
-    # num_partitions = len(leafs_G)
-    # assert num_partitions > 0, f"No leaf nodes of kind {leaf_kind} found in G"
-    #
-    # # Get & sort leaf nodes
-    # leafs_S = {n: data for n, data in S.nodes(data=True) if data["kind"] == leaf_kind}
-    # assert len(leafs_S) == 1, f"More than one leaf node of kind {leaf_kind} found in S"
-    # assert S.out_degree[list(leafs_S.keys())[0]] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
-    # leaf_S = list(leafs_S.keys())[0]
-    #
-    # # Get host generations
-    # # NOTE! excludes leaf node from generations
-    # generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
-    # # generations_S = list(nx.topological_generations(S))
-    #
-    # # Use first generation of motif as the initial front (i.e. nodes with in_degree=0)
-    # next_front = {n for n in G if G.in_degree(n) == 0}
-    #
-    # # Prepare matched in_degree counter for motif
-    # matched_in_degree = {n: 0 for n in G}
-    #
-    # # Initialize empty monomorphism map
-    # G_monomorphism = dict()
-    #
-    # # Iterate over leafs
-    # i_backtrack = 0
-    # i_partition = 0
-    # G_unmatched = G.copy(as_view=True)
-    # state_history = deque(maxlen=backtrack+1)
-    # while i_partition < num_partitions:  # todo: or until all nodes are matched?
-    #     assert len(next_front) > 0, "No more nodes in next_front but not all nodes in G have been matched"
-    #
-    #     # Get current leaf node
-    #     leaf_k = leafs_G[i_partition]
-    #
-    #     # Store current search state
-    #     state = dict(i_partition=i_partition, next_front=next_front.copy(), matched_in_degree=matched_in_degree.copy(), G_monomorphism=G_monomorphism.copy())
-    #     state_history.append(state)
-    #
-    #     # Match nodes in G to nodes in S
-    #     front = next_front.copy()
-    #     _matched_in_degree = matched_in_degree.copy()
-    #     _, front, monomorphism = next(match_supergraph_iter(G, S, front, generations_S, _matched_in_degree))
-    #
-    #     # Determine nodes in G that are ancestors of current leaf node (i.e. that must be matched before leaf node)
-    #     ancestors = nx.ancestors(G_unmatched, leaf_k)  # todo: add leaf_k?
-    #
-    #     # Determine matched nodes in ancestors
-    #     matched_nodes = ancestors.intersection(monomorphism.keys())
-    #     if len(matched_nodes) == len(ancestors):
-    #         # All ancestors are matched, so we can proceed to next leaf node
-    #         assert leaf_k in front, "leaf_k not in front"
-    #         next_front = front  # Make sure leaf_S is not included in next front.
-    #         next_front.remove(leaf_k)
-    #         monomorphism[leaf_k] = leaf_S
-    #         matched_in_degree = _matched_in_degree  # Use _matched_in_degree as matched_in_degree for next iteration
-    #         for n_G_child in G.successors(leaf_k):
-    #             matched_in_degree[n_G_child] += 1
-    #             if G.in_degree(n_G_child) == matched_in_degree[n_G_child]:
-    #                 next_front.add(n_G_child)
-    #
-    #         # Increment i_partition
-    #         i_partition += 1
-    #
-    #         # Reduce i_backtrack
-    #         # todo: when i_backtrack == 1 (before decrement), check if there are nodes in S that are never used in the monomorphism?
-    #         i_backtrack = max(i_backtrack - 1, 0)
-    #
-    #         # Add matched nodes to G_monomorphism
-    #         G_monomorphism.update(monomorphism)
-    #
-    #         # Remove largest_monomorphism nodes from G_unmatched
-    #         G_unmatched = G_unmatched.subgraph([n for n in G if n not in monomorphism])
-    #         # print("match")
-    #     else:  # Not all ancestors are matched
-    #         assert i_backtrack == 0, "i_backtrack should be 0"
-    #
-    #         # Short-circuit if no larger match is possible
-    #         short_circuit = False
-    #         largest_size = 0
-    #         largest_monomorphism = {}
-    #         ancestors_excl = set()
-    #
-    #         # Iterate until next leaf node is matched
-    #         # assert len(ancestors) > 0, "what if ancestors is empty?"
-    #         while len(ancestors_excl) < len(ancestors):
-    #             if short_circuit:  # short-circuit if search can never lead to a larger match
-    #                 break
-    #             # Determine nodes in next_front that are ancestors of next leaf node
-    #             # front = next_front
-    #             # _matched_in_degree = matched_in_degree.copy()
-    #             constraint_front = ancestors.intersection(next_front)
-    #             unconstraint_front = next_front.difference(constraint_front)
-    #
-    #             # Test every possible combinations of nodes in the constraint_front
-    #             assert len(constraint_front) > 0, "what if constraint_front is empty?"
-    #             power_set = generate_power_set(constraint_front, include_empty_set=False)
-    #             for var_front in power_set:
-    #                 var_front = set(var_front)
-    #                 _max_size = len(ancestors) - (len(ancestors_excl) + len(constraint_front) - len(var_front))
-    #                 if _max_size <= largest_size:
-    #                     # todo: we can also short_circuit if all nodes in S have been matched.
-    #                     short_circuit = True
-    #                     break
-    #                 # Use union of var_front and unconstraint_front as front
-    #                 front = var_front.union(unconstraint_front)
-    #
-    #                 # Mutate matched_in_degree for nodes excluded in power_set (i.e. nodes not in constraint_front but in var_front)
-    #                 _matched_in_degree = matched_in_degree.copy()
-    #                 for n_G in constraint_front.difference(var_front):
-    #                     for n_G_child in G.successors(n_G):
-    #                         _matched_in_degree[n_G_child] += 1
-    #                         if G.in_degree(n_G_child) == _matched_in_degree[n_G_child]:
-    #                             front.add(n_G_child)
-    #
-    #                 # Match nodes in G to nodes in S
-    #                 _, front, monomorphism = next(match_supergraph_iter(G, S, front, generations_S, _matched_in_degree))
-    #
-    #                 # Determine matched nodes in ancestors
-    #                 matched_nodes = ancestors.intersection(monomorphism.keys())
-    #                 matched_size = len(matched_nodes)
-    #
-    #                 if matched_size > largest_size:
-    #                     largest_monomorphism = monomorphism
-    #                     largest_size = matched_size
-    #                     # assert check_monomorphism(host, motif, largest_monomorphism)
-    #
-    #             # Mutate matched_in_degree for nodes excluded in power_set (i.e. nodes not in constraint_front but in var_front)
-    #             ancestors_excl = ancestors_excl.union(constraint_front)
-    #             next_front = unconstraint_front
-    #             for n_G in constraint_front:
-    #                 for n_G_child in G.successors(n_G):
-    #                     matched_in_degree[n_G_child] += 1
-    #                     if G.in_degree(n_G_child) == matched_in_degree[n_G_child]:
-    #                         # todo: remove n_G_child from matched_in_degree to reduce copied data
-    #                         next_front.add(n_G_child)
-    #
-    #         # Add leaf node to largest monomorphism
-    #         largest_monomorphism[leaf_k] = leaf_S
-    #
-    #         # Extend S with unmatched nodes in ancestors
-    #         # todo: Rewrite more clearly & cleanly
-    #         P = G.subgraph(ancestors.union({leaf_k}))
-    #         mcs = {node_S: node_p for node_p, node_S in largest_monomorphism.items()}
-    #         mcs_S = S.subgraph(mcs.keys())
-    #         mcs_P = nx.relabel_nodes(S.subgraph(mcs.keys()), mcs, copy=True)
-    #         E1 = emb(mcs_S, S)
-    #         E2 = emb(mcs_P, P)
-    #         tmp = nx.relabel_nodes(unify(mcs_P, P, E2), largest_monomorphism, copy=True)
-    #         new_P_S = unify(tmp, S, E1)
-    #
-    #         # Verify that new_P_S is a DAG
-    #         assert new_P_S.out_degree(leaf_S) == 0, "Should be a leaf node."
-    #         assert nx.is_directed_acyclic_graph(new_P_S), "Should be a DAG."
-    #
-    #         # Convert new_P_S to S
-    #         topo_sort = list(nx.topological_sort(new_P_S.subgraph([n for n in new_P_S.nodes() if n != leaf_S])))
-    #         topo_sort.append(leaf_S)  # Ensure that leaf_S is the last node in the sort of new_P_S
-    #         S, new_mono = sort_to_S(new_P_S, topo_sort, E_val, as_tc=True)
-    #         assert S.out_degree[list(leafs_S.keys())[0]] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
-    #
-    #         # Update generations
-    #         # NOTE! excludes leaf node from generations
-    #         generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
-    #         # generations_S = list(nx.topological_generations(S))
-    #
-    #         # Reset search state
-    #         check_i_partition = i_partition - (len(state_history) - 1)  # Decrease i_partition with backtrack?
-    #         i_partition, next_front, matched_in_degree, G_monomorphism = state_history[0].values()
-    #         assert i_partition == check_i_partition, "i_partition should be the same as before"
-    #         # todo: update G_monomorphism.values() with new_mono
-    #         G_unmatched = G.subgraph([n for n in G if n not in G_monomorphism])# Reset G_unmatched: G.remove_nodes(G_monomorphism.keys())
-    #
-    #         # Now that we have a new S, we should backtrack the search.
-    #         i_backtrack = len(state_history)  # Make sure we don't end up in an infinite loop.
-    #
-    #         # Reset state history
-    #         state_history = deque(maxlen=backtrack+1)
-    #         print(S)
-    # return S
-
-
 def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtrack: int = 3):
     # Get & sort leaf nodes
     leafs_G = {n: data for n, data in G.nodes(data=True) if data["kind"] == leaf_kind}
@@ -1048,10 +865,9 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
     assert S.out_degree[list(leafs_S.keys())[0]] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
     leaf_S = list(leafs_S.keys())[0]
 
-    # Get host generations
-    # NOTE! excludes leaf node from generations
+    # Get host generations (excludes leaf node from generations)
+    num_nodes_S = len(S) - 1  # Excluding the leaf node
     generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
-    # generations_S = list(nx.topological_generations(S))
 
     # Use first generation of motif as the initial front (i.e. nodes with in_degree=0)
     next_front = {n for n in G if G.in_degree(n) == 0}
@@ -1068,48 +884,52 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
     # Iterate over leafs
     i_backtrack = 0
     i_partition = 0
-    G_unmatched = G.copy(as_view=True)
+    G_unmatched = G.copy(as_view=False)
     state_history = deque(maxlen=backtrack+1)
-    while i_partition < num_partitions:  # todo: or until all nodes are matched?
+    while i_partition < num_partitions:
         assert len(next_front) > 0, "No more nodes in next_front but not all nodes in G have been matched"
 
         # Get current leaf node
         leaf_k = leafs_G[i_partition]
 
         # Store current search state
-        state = dict(i_partition=i_partition, next_front=next_front.copy(), matched_in_degree=matched_in_degree.copy(), G_monomorphism=G_monomorphism.copy())
+        delta_matched_in_degree = dict()
+        delta_G_monomorphism = dict()
+        state = dict(i_partition=i_partition,
+                     next_front=next_front.copy(),
+                     delta_matched_in_degree=delta_matched_in_degree,
+                     delta_G_monomorphism=delta_G_monomorphism)
         state_history.append(state)
 
         # Match nodes in G to nodes in S
         front = next_front.copy()
-        _matched_in_degree = matched_in_degree.copy()
-        _, front, monomorphism = next(match_supergraph_iter(G, S, front, generations_S, _matched_in_degree))
+        _, front, monomorphism = next(match_supergraph_iter(G, S, front, generations_S, matched_in_degree, delta_matched_in_degree))
 
         # Determine nodes in G that are ancestors of current leaf node (i.e. that must be matched before leaf node)
-        ancestors = nx.ancestors(G_unmatched, leaf_k)  # todo: add leaf_k?
+        ancestors = nx.ancestors(G_unmatched, leaf_k)
 
         # Determine matched nodes in ancestors
         matched_nodes = ancestors.intersection(monomorphism.keys())
-        if len(matched_nodes) == len(ancestors):
+        if len(matched_nodes) == len(ancestors):  # Perfect match
             # All ancestors are matched, so we can proceed to next leaf node
             assert leaf_k in front, "leaf_k not in front"
             next_front = front  # Make sure leaf_S is not included in next front.
             next_front.remove(leaf_k)
             monomorphism[leaf_k] = leaf_S
-            matched_in_degree = _matched_in_degree  # Use _matched_in_degree as matched_in_degree for next iteration
             for n_G_child in G.successors(leaf_k):
                 matched_in_degree[n_G_child] += 1
+                delta_matched_in_degree[n_G_child] = delta_matched_in_degree.get(n_G_child, 0) + 1
                 if G.in_degree(n_G_child) == matched_in_degree[n_G_child]:
                     next_front.add(n_G_child)
 
             # Add matched nodes to G_monomorphism
             G_monomorphism.update(monomorphism)
+            delta_G_monomorphism.update(monomorphism)
 
             # Remove largest_monomorphism nodes from G_unmatched
-            G_unmatched = G_unmatched.subgraph([n for n in G if n not in monomorphism])
+            G_unmatched.remove_nodes_from(monomorphism.keys())
 
             # Reduce i_backtrack
-            # todo: when i_backtrack == 1 (before decrement), prune nodes in S that are never used in the monomorphism?
             i_backtrack = max(i_backtrack - 1, 0)
 
             # Only yield if we have matched a new partition
@@ -1118,51 +938,81 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
 
             # Increment i_partition
             i_partition += 1
-
-            # print("match")
-        else:  # Not all ancestors are matched
+        else:  # Not all ancestors are matched --> find largest match.
             assert i_backtrack == 0, "i_backtrack should be 0"
+
+            # In general, the search works as follows.
+            # Get a set of the "exploration front" of the motif (G) -- nodes that are not
+            # yet assigned in a partition but are connected to at least one assigned
+            # node in previous partitions.
+
+            # For example, in the motif A -> B -> C, if A is already assigned, then the
+            # front is [B] (C is not included because it has no connection to any
+            # assigned node of a previous partition).
+
+            # The front is split into:
+            # - constrained_front: nodes that are ancestors of the next leaf_k, and must be matched.
+            # - optional_front: nodes that are not a direct ancestors, and can optionally be matched.
+            # The constrained_front either contains leaf_k or is non-empty.
+
+            # In search of the largest match, we systematically exclude nodes from the constrained_front and try to find a match.
+            # If no match is found, we exclude more nodes from the constrained_front and try again.
+
+            # There was no perfect match, so we need to reset matched_in_degree with delta_matched_in_degree
+            for k, v in delta_matched_in_degree.items():
+                matched_in_degree[k] -= v
+            delta_matched_in_degree = dict()
 
             # Short-circuit if no larger match is possible
             short_circuit = False
             largest_size = 0
             largest_monomorphism = {}
-            ancestors_excl = set()
-
-            # Iterate until next leaf node is matched
-            # assert len(ancestors) > 0, "what if ancestors is empty?"
-            while len(ancestors_excl) < len(ancestors):
+            excluded_from_search = set()
+            while len(excluded_from_search) < len(ancestors):
+                # See other short_circuit statement for explanation.
                 if short_circuit:  # short-circuit if search can never lead to a larger match
                     break
-                # Determine nodes in next_front that are ancestors of next leaf node
-                # front = next_front
-                # _matched_in_degree = matched_in_degree.copy()
-                constraint_front = ancestors.intersection(next_front)
-                unconstraint_front = next_front.difference(constraint_front)
 
-                # Test every possible combinations of nodes in the constraint_front
-                assert len(constraint_front) > 0, "what if constraint_front is empty?"
-                power_set = generate_power_set(constraint_front, include_empty_set=False)
+                # The front is split into:
+                # - constrained_front: nodes that are ancestors of the next leaf_k, and must be matched.
+                # - optional_front: nodes that are not a direct ancestors, and can optionally be matched.
+                constrained_front = ancestors.intersection(next_front)
+                optional_front = next_front.difference(constrained_front)
+
+                # In search of the largest match, we systematically exclude nodes from the constrained_front and try to find a match.
+                # If no match is found, we exclude more nodes from the constrained_front and try again.
+                assert len(constrained_front) > 0, "what if constrained_front is empty?"
+                power_set = generate_power_set(constrained_front, include_empty_set=False)
                 for var_front in power_set:
                     var_front = set(var_front)
-                    _max_size = len(ancestors) - (len(ancestors_excl) + len(constraint_front) - len(var_front))
-                    if _max_size <= largest_size:
-                        # todo: we can also short_circuit if all nodes in S have been matched.
+
+                    # We short-circuit the largest search when we cannot find a larger match. This may happen in two cases:
+                    #  - All nodes in S have been matched.
+                    #  - As the search continues, more nodes are excluded, making the maximum possible match smaller than the
+                    #    largest match we've found up until now.
+                    _max_size = len(ancestors) - (len(excluded_from_search) + len(constrained_front) - len(var_front))
+                    if num_nodes_S == largest_size or _max_size <= largest_size:
                         short_circuit = True
                         break
-                    # Use union of var_front and unconstraint_front as front
-                    front = var_front.union(unconstraint_front)
 
-                    # Mutate matched_in_degree for nodes excluded in power_set (i.e. nodes not in constraint_front but in var_front)
-                    _matched_in_degree = matched_in_degree.copy()
-                    for n_G in constraint_front.difference(var_front):
+                    # Use union of var_front and optional_front as front
+                    front = var_front.union(optional_front)
+
+                    # Mutate matched_in_degree for nodes excluded in power_set (i.e. nodes not in constrained_front but in var_front)
+                    _delta_matched_in_degree = dict()  # Record difference in matched degree
+                    for n_G in constrained_front.difference(var_front):
                         for n_G_child in G.successors(n_G):
-                            _matched_in_degree[n_G_child] += 1
-                            if G.in_degree(n_G_child) == _matched_in_degree[n_G_child]:
+                            matched_in_degree[n_G_child] += 1
+                            _delta_matched_in_degree[n_G_child] = _delta_matched_in_degree.get(n_G_child, 0) + 1
+                            if G.in_degree(n_G_child) == matched_in_degree[n_G_child]:
                                 front.add(n_G_child)
 
                     # Match nodes in G to nodes in S
-                    _, front, monomorphism = next(match_supergraph_iter(G, S, front, generations_S, _matched_in_degree))
+                    _, front, monomorphism = next(match_supergraph_iter(G, S, front, generations_S, matched_in_degree, _delta_matched_in_degree))
+
+                    # Reset matched_in_degree with _delta_matched_in_degree
+                    for k, v in _delta_matched_in_degree.items():
+                        matched_in_degree[k] -= v
 
                     # Determine matched nodes in ancestors
                     matched_nodes = ancestors.intersection(monomorphism.keys())
@@ -1171,67 +1021,91 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
                     if matched_size > largest_size:
                         largest_monomorphism = monomorphism
                         largest_size = matched_size
-                        # assert check_monomorphism(host, motif, largest_monomorphism)
 
-                # Mutate matched_in_degree for nodes excluded in power_set (i.e. nodes not in constraint_front but in var_front)
-                ancestors_excl = ancestors_excl.union(constraint_front)
-                next_front = unconstraint_front
-                for n_G in constraint_front:
+                # Mutate matched_in_degree for nodes excluded in power_set (i.e. nodes not in constrained_front but in var_front)
+                excluded_from_search = excluded_from_search.union(constrained_front)
+                next_front = optional_front
+                for n_G in constrained_front:
                     for n_G_child in G.successors(n_G):
                         matched_in_degree[n_G_child] += 1
+                        delta_matched_in_degree[n_G_child] = delta_matched_in_degree.get(n_G_child, 0) + 1
                         if G.in_degree(n_G_child) == matched_in_degree[n_G_child]:
-                            # todo: remove n_G_child from matched_in_degree to reduce copied data
                             next_front.add(n_G_child)
 
             # Add leaf node to largest monomorphism
             largest_monomorphism[leaf_k] = leaf_S
 
-            # Extend S with unmatched nodes in ancestors
-            # todo: Rewrite more clearly & cleanly
-            P = G.subgraph(ancestors.union({leaf_k}))
-            mcs = {node_S: node_p for node_p, node_S in largest_monomorphism.items()}
+            # Determine the constrained subgraph P that must be matched
+            nodes_P = ancestors.union(largest_monomorphism.keys())
+            P = G.subgraph(nodes_P)
+            assert check_monomorphism(S, P, largest_monomorphism)
+
+            # Create mapping of nodes from S to P
+            mcs = {node_S: node_P for node_P, node_S in largest_monomorphism.items()}
+
+            # Extract subgraphs based on the mappings
             mcs_S = S.subgraph(mcs.keys())
-            mcs_P = nx.relabel_nodes(S.subgraph(mcs.keys()), mcs, copy=True)
-            E1 = emb(mcs_S, S)
-            E2 = emb(mcs_P, P)
-            tmp = nx.relabel_nodes(unify(mcs_P, P, E2), largest_monomorphism, copy=True)
-            new_P_S = unify(tmp, S, E1)
+            mcs_P = P.subgraph(mcs.values())
 
-            # Verify that new_P_S is a DAG
-            assert new_P_S.out_degree(leaf_S) == 0, "Should be a leaf node."
-            assert nx.is_directed_acyclic_graph(new_P_S), "Should be a DAG."
+            # Compute embeddings of mcs_S and mcs_P
+            E1 = emb(mcs_S, S)  # Embedding of mcs_S in S
+            E2 = emb(mcs_P, P)  # Embedding of mcs_P in P
 
-            # Convert new_P_S to S
-            topo_sort = list(nx.topological_sort(new_P_S.subgraph([n for n in new_P_S.nodes() if n != leaf_S])))
-            topo_sort.append(leaf_S)  # Ensure that leaf_S is the last node in the sort of new_P_S
-            new_S, new_mono = sort_to_S(new_P_S, topo_sort, E_val, as_tc=True)
+            # Unify the maximum common subgraph with the original graph
+            mcs_P_unified_with_P = unify(mcs_P, P, E2)
+
+            # Relabel the nodes of the unified graph using the largest monomorphism
+            relabelled_graph = nx.relabel_nodes(mcs_P_unified_with_P, largest_monomorphism, copy=True)
+
+            # Unify the relabelled graph with the second graph
+            P_unified_with_S = unify(relabelled_graph, S, E1)
+
+            # Check that the number of added nodes is equal to the number of nodes
+            num_new_nodes = len(P_unified_with_S.nodes()) - len(S.nodes())
+            check_num_new_nodes = len(P.nodes()) - len(largest_monomorphism)
+            assert num_new_nodes == check_num_new_nodes, f"{num_new_nodes} != {check_num_new_nodes}"
+
+            # Verify that P_unified_with_S is a DAG
+            assert P_unified_with_S.out_degree(leaf_S) == 0, "Should be a leaf node."
+            assert nx.is_directed_acyclic_graph(P_unified_with_S), "Should be a DAG."
+
+            # Convert P_unified_with_S to S
+            topo_sort = list(nx.topological_sort(P_unified_with_S.subgraph([n for n in P_unified_with_S.nodes() if n != leaf_S])))
+            topo_sort.append(leaf_S)  # Ensure that leaf_S is the last node in the sort of P_unified_with_S
+            new_S, new_mono = sort_to_S(P_unified_with_S, topo_sort, E_val, as_tc=True)
             assert S.out_degree[list(leafs_S.keys())[0]] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
 
-            # Update S
+            # Update S and related variables
             S_to_new_S = {node_p: node_S for node_p, node_S in new_mono.items() if node_p in S.nodes}
             S_init_to_S = {node_S_init: node_S for node_S_init, node_S in S_init_to_S.items()}
             S = new_S
-
-            # Update generations
-            # NOTE! excludes leaf node from generations
+            num_nodes_S = len(S) - 1  # Excluding the leaf node
             generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
-            # generations_S = list(nx.topological_generations(S))
 
             # Reset search state
-            check_i_partition = i_partition - (len(state_history) - 1)  # Decrease i_partition with backtrack?
-            i_partition, next_front, matched_in_degree, G_monomorphism = state_history[0].values()
-            assert i_partition == check_i_partition, "i_partition should be the same as before"
+            i_partition, next_front = state_history[0]["i_partition"], state_history[0]["next_front"]
+            state_history[-1]["delta_matched_in_degree"] = delta_matched_in_degree
+            for s in state_history:
+                _, _, delta_matched_in_degree, delta_G_monomorphism = s.values()
+                # Reset matched_in_degree with delta_matched_in_degree from previous iterations
+                for k, v in delta_matched_in_degree.items():
+                    matched_in_degree[k] -= v
+                # Reset G_monomorphism with delta_G_monomorphism from previous iterations
+                for k in delta_G_monomorphism.keys():
+                    G_monomorphism.pop(k)
+
+            # Update G_monomorphism from S to new_S
             G_monomorphism = {node_G: S_to_new_S[node_S] for node_G, node_S in G_monomorphism.items()}
-            G_unmatched = G.subgraph([n for n in G if n not in G_monomorphism])# Reset G_unmatched: G.remove_nodes(G_monomorphism.keys())
+
+            # Reinitialize G_unmatched with nodes not already matched
+            G_unmatched = G.copy()
+            G_unmatched.remove_nodes_from(G_monomorphism.keys())
 
             # Now that we have a new S, we should backtrack the search.
             i_backtrack = len(state_history)  # Make sure we don't end up in an infinite loop.
 
             # Reset state history
             state_history = deque(maxlen=backtrack+1)
-            # tqdm.tqdm.set_description(str(S))
-            # tqdm.tqdm.write(str(S))
-            # print(S)
 
 
 class GrowSuperGraphIter:

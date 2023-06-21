@@ -10,20 +10,20 @@ import supergraph as sg
 if __name__ == '__main__':
 	# Function inputs
 	MUST_PLOT = False
-	SEED = 24  # 22
+	SEED = 20  # 22
 	THETA = 0.07
-	SIGMA = 0.4
+	SIGMA = 0.0
 	WINDOW = 0
-	NUM_NODES = 4  # 30
-	T = 200  # todo: algorithm scales horribly with T (& probably with number of nodes in G). Investigate.
+	NUM_NODES = 12  # 30
+	T = 100
 
 	LEAF_KIND = 0
 	BACKTRACK = 20
 
 	# Define graph
 	# fs = [1, 2, 3, 4, 5, 10, 20, 20, 20, 40, 200]
-	fs = [float(i) for i in range(1, NUM_NODES + 1)] + [200]
-	# fs = [float(i) for i in range(1, NUM_NODES + 1)]
+	# fs = [float(i) for i in range(1, NUM_NODES + 1)] + [200]
+	fs = [float(i) for i in range(1, NUM_NODES + 1)]
 	NUM_NODES = len(fs)
 	edges = {(i, (i + 1) % len(fs)) for i in range(len(fs) - 1)}  # Add forward edges
 	edges.update({(j, i) for i, j in edges})  # Add reverse edges
@@ -47,10 +47,12 @@ if __name__ == '__main__':
 
 	# Grow supergraph
 	# todo: CHECK!! return monomorphism, S_init_to_S_rec
-	start_iter = time.time()
-	S_rec, _S_init_to_S, _monomorphism = sg.grow_supergraph(G, S_init, LEAF_KIND, edges, backtrack=BACKTRACK)
-	stop_iter = time.time()
-	print(f"Time: {stop_iter - start_iter}")
+	S_rec, _S_init_to_S, _monomorphism = sg.grow_supergraph(G, S_init, LEAF_KIND, edges, backtrack=BACKTRACK, progress_bar=True)
+	# for i in range(10):
+	# 	start_iter = time.time()
+	# 	S_init, _S_init_to_S, _monomorphism = sg.grow_supergraph(G, S_init, LEAF_KIND, edges, backtrack=BACKTRACK, progress_bar=True)
+	# 	stop_iter = time.time()
+	# 	print(f"Time: {stop_iter - start_iter}")
 
 	# Define linear supergraph (benchmark)
 	# todo: investigate effect of order in S_lin
