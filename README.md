@@ -25,10 +25,10 @@ Cite supergraph
 If you are using supergraph for your scientific publications, please cite:
 
 ``` {.sourceCode .bibtex}
-@article{eagerx,
+@article{supergraph,
     author  = {van der Heijden, Bas, and Ferranti, Laura and Kober, Jens and Babuska, Robert},
     title = {Supergraph},
-    year = {2022},
+    year = {2023},
     publisher = {GitHub},
     journal = {GitHub repository},
     howpublished = {\url{https://github.com/bheijden/supergraph}}
