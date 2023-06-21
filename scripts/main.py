@@ -11,6 +11,9 @@ import supergraph as sg
 # import supergraph.mono as sg_mono
 
 # Define graph isomorphism function
+import supergraph.deprecated
+import supergraph.evaluate
+
 _is_node_attr_match = lambda motif_node_id, host_node_id, motif, host: host.nodes[host_node_id]["kind"] == motif.nodes[motif_node_id]["kind"]
 _is_node_attr_match = lru_cache()(_is_node_attr_match)
 _is_edge_attr_match = lambda motif_edge_id, host_edge_id, motif, host: True
@@ -79,34 +82,34 @@ if __name__ == "__main__":
     edges.update({(i, i) for i in range(NUM_NODES)})  # Stateful edges
 
     # Create graph
-    G = sg.create_graph(fs, edges, T, seed=SEED, theta=THETA, sigma=SIGMA)
-    G = sg.prune_by_window(G, WINDOW)
+    G = supergraph.evaluate.create_graph(fs, edges, T, seed=SEED, theta=THETA, sigma=SIGMA)
+    G = supergraph.evaluate.prune_by_window(G, WINDOW)
 
     # Get initial supergraph
-    _E_val = sg.get_set_of_feasible_edges(G)
+    _E_val = supergraph.deprecated.get_set_of_feasible_edges(G)
     S_init, monomorphism = sg.sort_to_S(G, [f"{LEAF_KIND}_0"], _E_val)
 
     # Supergraph
     S_rec, *_ = sg.grow_supergraph(G, S_init, LEAF_KIND, _E_val)
 
     # Partition
-    P = sg.balanced_partition(G, root_kind=ROOT_KIND)
+    P = supergraph.deprecated.balanced_partition(G, root_kind=ROOT_KIND)
 
     # Record original mapping
     partition_order = list(P.keys())
 
     # Determine all feasible edges between node types (E_val) = S
-    E_val = sg.get_set_of_feasible_edges(P)
+    E_val = supergraph.deprecated.get_set_of_feasible_edges(P)
 
     # Select partition P that has the most edges (i.e. edges are interpreted as constraints).
     key_S, P_S = sorted(P.items(), key=lambda item: item[1].number_of_edges(), reverse=True)[0]
 
     # Determine starting pattern. monomorphism = {P_node: S_0_node}
-    S_init, monomorphism = sg.as_S(P_S, E_val, num_topo=NUM_TOPO, as_tc=AS_TC)
+    S_init, monomorphism = supergraph.deprecated.as_S(P_S, E_val, num_topo=NUM_TOPO, as_tc=AS_TC)
     S = S_init
 
     # Define linear supergraph (benchmark)
-    S_lin, monomorphism_lin = next(sg.linear_S_iter(G, E_val))
+    S_lin, monomorphism_lin = next(supergraph.evaluate.linear_S_iter(G, E_val))
 
     # Iterate over partitions sorted by the number of edges in descending order.
     P_sorted = {k: P for k, P in sorted(P.items(), key=lambda item: item[1].number_of_edges(), reverse=DESCENDING)} if MUST_SORT else P
@@ -114,7 +117,7 @@ if __name__ == "__main__":
     if MUST_PLOT:
         fig, axes = plt.subplots(nrows=2)
         fig.set_size_inches(12, 15)
-        sg.plot_graph(axes[0], S)
+        supergraph.evaluate.plot_graph(axes[0], S)
         plt.show()
 
     # Find S
@@ -125,7 +128,7 @@ if __name__ == "__main__":
     for k, P in P_sorted.items():
         # Find largest monomorphism
         start = time.time()
-        num_evals, largest_mono = sg.find_largest_monomorphism(S, P)
+        num_evals, largest_mono = supergraph.deprecated.find_largest_monomorphism(S, P)
         t_find_motifs = time.time() - start
 
         # Check if perfect match
@@ -151,7 +154,7 @@ if __name__ == "__main__":
             assert nx.is_directed_acyclic_graph(new_P_S), "Should be a DAG."
 
             # Determine S
-            new_S, monomorphism = sg.as_S(new_P_S, E_val, num_topo=NUM_TOPO, as_tc=AS_TC)
+            new_S, monomorphism = supergraph.deprecated.as_S(new_P_S, E_val, num_topo=NUM_TOPO, as_tc=AS_TC)
 
             # Determine P_monomorphism
             P_monomorphism = {n: None for n in P.nodes}

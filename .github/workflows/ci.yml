@@ -66,12 +66,12 @@ jobs:
       #----------------------------------------------
       # check codestyle & lint
       #----------------------------------------------
-#      - name: Check codestyle
-#        run: |
-#          make check-codestyle
-#      - name: Lint with flake8
-#        run: |
-#          make lint
+      - name: Check codestyle
+        run: |
+          make check-codestyle
+      - name: Lint with flake8
+        run: |
+          make lint
       #----------------------------------------------
       #    add matrix specifics and run test suite
       #----------------------------------------------

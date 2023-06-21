@@ -1,5 +1,5 @@
 import supergraph as sg
-
+import supergraph.evaluate
 
 if __name__ == '__main__':
 	# Function inputs
@@ -25,8 +25,8 @@ if __name__ == '__main__':
 	edges.update({(i, i) for i in range(len(fs))})  # Stateful edges
 
 	# Define graph
-	G = sg.create_graph(fs, edges, T, seed=SEED, theta=THETA, sigma=SIGMA)
-	G = sg.prune_by_window(G, WINDOW)
+	G = supergraph.evaluate.create_graph(fs, edges, T, seed=SEED, theta=THETA, sigma=SIGMA)
+	G = supergraph.evaluate.prune_by_window(G, WINDOW)
 
 	# Define leafs
 	leafs_G = {n: data for n, data in G.nodes(data=True) if data["kind"] == LEAF_KIND}
@@ -51,7 +51,7 @@ if __name__ == '__main__':
 	# Define linear supergraph (benchmark)
 	# todo: investigate effect of order in S_lin
 	# todo: baseline with fixed blocks in-between leaf_nodes.
-	S_lin, monomorphism_lin = next(sg.linear_S_iter(G, edges))
+	S_lin, monomorphism_lin = next(supergraph.evaluate.linear_S_iter(G, edges))
 
 	units_lin, pred_lin, m_lin = sg.evaluate_supergraph(G, S_lin)
 	print(f"S_lin  | Number of nodes: {pred_lin}/{len(G)} | number of units: {units_lin}")

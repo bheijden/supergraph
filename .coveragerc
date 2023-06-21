@@ -4,6 +4,9 @@ omit =
     tests/*
     examples/*
     scripts/*
+    supergraph/deprecated.py
+    supergraph/evaluate.py
+    supergraph/open_colors.py
 
 [report]
 exclude_lines =
