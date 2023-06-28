@@ -10,7 +10,7 @@ documentation = "https://github.com/bheijden/supergraph"
 
 [tool.poetry.dependencies]
 python = "^3.8"
-networkx = "^2.8.8"
+networkx = ">=2.8.8,<4.0.0"
 numpy = "^1.24.3"
 tqdm = "^4.65.0"
 
