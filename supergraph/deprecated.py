@@ -3,7 +3,7 @@ from typing import Dict, Union, Any, Set, Tuple
 import networkx as nx
 import numpy as np
 
-from supergraph import check_monomorphism, generate_power_set, sort_to_S
+from supergraph import generate_power_set, _is_node_attr_match
 
 
 def ancestral_partition(G, root_kind):
@@ -200,10 +200,6 @@ def get_set_of_feasible_edges(G: Union[Dict[Any, nx.DiGraph], nx.DiGraph]) -> Se
     return E_val
 
 
-def _is_node_attr_match(motif_node_id: str, host_node_id: str, motif: nx.DiGraph, host: nx.DiGraph):
-    return host.nodes[host_node_id]["kind"] == motif.nodes[motif_node_id]["kind"]
-
-
 def find_monomorphism(host: nx.DiGraph, motif: nx.DiGraph) -> Dict[str, str]:
     # Get host generations
     generations_host = list(nx.topological_generations(host))
@@ -344,3 +340,65 @@ def as_S(
             S = new_S
             monomorphism = new_monomorphism
     return S, monomorphism
+
+
+def sort_to_S(P: nx.DiGraph, sort, E_val, as_tc: bool = False) -> Tuple[nx.DiGraph, Dict[Any, Any]]:
+    attribute_set = {"kind", "order", "edgecolor", "facecolor", "position", "alpha"}
+    kinds = {P.nodes[n]["kind"]: data for n, data in P.nodes(data=True)}
+    kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
+    edge_attribute_set = {"color", "linestyle", "alpha"}
+    try:
+        edge_data = {a: d for a, d in next(iter(P.edges(data=True)))[-1].items() if a in edge_attribute_set}
+    except StopIteration:
+        # No edges in P
+        edge_data = dict()
+    S = nx.DiGraph()
+    slots = {k: 0 for k in kinds}
+    monomorphism = dict()
+    for n in sort:
+        k = P.nodes[n]["kind"]
+        s = slots[k]
+        # Add monomorphism map
+        name = f"s{k}_{s}"
+        monomorphism[n] = name
+        # Add node and data
+        data = kinds[k].copy()
+        data.update({"seq": s})
+        S.add_node(name, **data)
+        # Increase slot count
+        slots[k] += 1
+
+    # Add feasible edges
+    for i, n_out in enumerate(sort):
+        name_out = monomorphism[n_out]
+        for _j, n_in in enumerate(sort[i + 1 :]):
+            name_in = monomorphism[n_in]
+            e_P = (n_out, n_in)  # Edge in P
+            e_S = (name_out, name_in)  # Corresponding edge in S
+            e_kind = (S.nodes[name_out]["kind"], S.nodes[name_in]["kind"])  # Kind of edge
+
+            # Add edge if it is in P or if we are adding all feasible edges
+            if e_P in P.edges:
+                S.add_edge(*e_S, **edge_data)
+            elif as_tc and e_kind in E_val:
+                S.add_edge(*e_S, **edge_data)
+
+    # Set positions of nodes
+    generations = list(nx.topological_generations(S))
+    for i_gen, gen in enumerate(generations):
+        for i_node, n in enumerate(gen):
+            S.nodes[n]["position"] = (i_gen, i_node)
+            S.nodes[n]["generation"] = i_gen
+    return S, monomorphism
+
+
+def check_monomorphism(host: nx.DiGraph, motif: nx.DiGraph, mapping: Dict[str, str]) -> bool:
+    check_edges = all(
+        [
+            host.has_edge(mapping[motif_u], mapping[motif_v])  # todo: only check depth.
+            for motif_u, motif_v in motif.edges
+            if motif_u in mapping and motif_v in mapping
+        ]
+    )
+    check_nodes = all([_is_node_attr_match(motif_n, host_n, motif, host) for motif_n, host_n in mapping.items()])
+    return check_nodes and check_edges

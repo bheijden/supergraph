@@ -8,42 +8,56 @@ def test_integration():
 	SIGMA = 0.3
 	WINDOW = 0
 	NUM_NODES = 5  # 30
-	T = 200
+	MAX_FREQ = 200
+	COMBINATION_MODE = "linear"
+	EPISODES = 2
+	LENGTH = 100
 
 	LEAF_KIND = 0
 	BACKTRACK = 20
+	SORT_FN = None
 
 	# Define graph
-	fs = [float(i) for i in range(1, NUM_NODES + 1)] + [200]
-	# fs = [float(i) for i in range(1, NUM_NODES + 1)]
-	NUM_NODES = len(fs)
+	fs = [float(i) for i in range(1, NUM_NODES)] + [MAX_FREQ]
 	edges = {(i, (i + 1) % len(fs)) for i in range(len(fs) - 1)}  # Add forward edges
 	edges.update({(j, i) for i, j in edges})  # Add reverse edges
 	# edges.update({(len(fs)-1, 0) for i, j in edges})  # Add reverse edges
 	edges.update({(i, i) for i in range(len(fs))})  # Stateful edges
 
 	# Define graph
-	G = supergraph.evaluate.create_graph(fs, edges, T, seed=SEED, theta=THETA, sigma=SIGMA)
-	G = supergraph.evaluate.prune_by_window(G, WINDOW)
+	Gs = []
+	for i in range(EPISODES):
+		G = supergraph.evaluate.create_graph(fs, edges, LENGTH, seed=SEED+i, theta=THETA, sigma=SIGMA)
+		G = supergraph.evaluate.prune_by_window(G, WINDOW)
+		G = supergraph.evaluate.prune_by_leaf(G, LEAF_KIND)
+		Gs.append(G)
+
+	# Define initial supergraph
+	S_init, _ = sg.as_supergraph(Gs[0], leaf_kind=LEAF_KIND, sort=[f"{LEAF_KIND}_0"])
 
 	# Define leafs
 	leafs_G = {n: data for n, data in G.nodes(data=True) if data["kind"] == LEAF_KIND}
 	leafs_G = [k for k in sorted(leafs_G.keys(), key=lambda k: leafs_G[k]["seq"])]
 
-	# Define initial supergraph
-	S_init, _ = sg.sort_to_S(G, [f"{LEAF_KIND}_0"], edges)
-
 	# Grow supergraph
-	S_rec, _S_init_to_S, _monomorphism = sg.grow_supergraph(G, S_init, LEAF_KIND, edges, backtrack=BACKTRACK, progress_bar=True)
+	S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph(Gs, S_init, LEAF_KIND,
+	                                                        combination_mode=COMBINATION_MODE,
+	                                                        backtrack=BACKTRACK,
+	                                                        sort_fn=SORT_FN,
+	                                                        progress_bar=True, validate=True)
 
-	# Define linear supergraph (benchmark)
-	S_lin, monomorphism_lin = next(supergraph.evaluate.linear_S_iter(G, edges))
-	units_lin, pred_lin, m_lin = sg.evaluate_supergraph(G, S_lin)
-	print(f"S_lin  | Number of nodes: {pred_lin}/{len(G)} | number of units: {units_lin}")
-	units_rec, pred_rec, m_rec = sg.evaluate_supergraph(G, S_rec)
-	print(f"S_rec | Number of nodes: {pred_rec}/{len(G)} | number of units: {units_rec}/{len(leafs_G)}")
-	size = len(S_rec)
-	supergraph_nodes = size * len(leafs_G)
-	matched_nodes = len(_monomorphism)
-	efficiency = matched_nodes / supergraph_nodes
-	print(f"matched {matched_nodes}/{len(G)} ({efficiency:.2%} efficiency, {size} size)")
+	# Baseline lin: forloop-like supergraph, one node of each kind, not taking leaf_kind into account.
+	# Baseline top: topological sort, and equalize # of nodes in-between leafs
+	# Baseline gen: topological sort, and perform generational sort on partitions of nodes in-between leafs, equalize # of generations in-between leafs
+	linear_iter = supergraph.evaluate.linear_S_iter(Gs)
+	S_lin, monomorphism_lin = next(linear_iter)  # todo: evaluate order of S_lin
+	S_top, S_gen = supergraph.evaluate.baselines_S(Gs, LEAF_KIND)
+
+	# Evaluate performance
+	m_sup = sg.evaluate_supergraph(Gs, S_sup, progress_bar=True, name="S_sup")
+	m_lin = sg.evaluate_supergraph(Gs, S_lin, progress_bar=True, name="S_lin")
+	m_gen = sg.evaluate_supergraph(Gs, S_gen, progress_bar=True, name="S_gen")
+	m_top = sg.evaluate_supergraph(Gs, S_top, progress_bar=True, name="S_top")
+
+	# Print results
+	print(sum([len(m) for m in m_sup]), sum([len(m) for m in m_lin]), sum([len(m) for m in m_gen]), sum([len(m) for m in m_top]))

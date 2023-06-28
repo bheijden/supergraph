@@ -1,13 +1,14 @@
+from tqdm import tqdm
 import itertools
 from functools import partial
-from typing import List, Set, Tuple
+from typing import List, Set, Tuple, Union
 
 import numpy as np
 from math import floor, ceil
 
 import networkx as nx
 
-from supergraph import open_colors as oc
+from supergraph import open_colors as oc, as_supergraph
 
 edge_data = {"color": oc.ecolor.used, "linestyle": "-", "alpha": 1.0}
 pruned_edge_data = {"color": oc.ecolor.pruned, "linestyle": "--", "alpha": 0.5}
@@ -126,7 +127,7 @@ def get_excalidraw_graph():
 
     # Add edges
     edges = [("world", "sensor"), ("sensor", "agent"), ("agent", "actuator"), ("actuator", "world")]
-    for (i, o) in edges:
+    for (i, o) in tqdm(edges, desc="Generate graph"):
         for idx, id_seq in enumerate(node_kinds[i]):
             data_source = G0.nodes[id_seq]
             # Add stateful edge
@@ -230,7 +231,13 @@ def ornstein_uhlenbeck_samples(rng, theta, mu, sigma, dt, x0, n):
 
 
 def create_graph(
-    fs: List[float], edges: Set[Tuple[int, int]], T: float, seed: int = 0, theta: float = 0.07, sigma: float = 0.1
+    fs: List[float],
+    edges: Set[Tuple[int, int]],
+    T: float,
+    seed: int = 0,
+    theta: float = 0.07,
+    sigma: float = 0.1,
+    progress_bar: bool = True,
 ):
     assert all([T > 1 / _f for _f in fs]), "The largest sampling time must be smaller than the simulated time T."
 
@@ -292,9 +299,10 @@ def create_graph(
             node_kinds[n].append(id)
 
     # Add edges
-    for (o, i) in edges:
+    iters = 0
+    for (o, i) in tqdm(edges, desc="Generate episode", disable=not progress_bar):
+        _seq = 0
         for idx, id_seq in enumerate(node_kinds[o]):
-            _seq = 0
             data_source = G.nodes[id_seq]
             if idx > 0 and o == i:  # Add stateful edge
                 data = {"delay": 0.0, "pruned": False}
@@ -302,6 +310,7 @@ def create_graph(
                 G.add_edge(node_kinds[i][idx - 1], id_seq, **data)
             else:
                 for id_tar in node_kinds[i][_seq:]:
+                    iters += 1
                     data_target = G.nodes[id_tar]
                     _seq = data_target["seq"]
                     if o < i:
@@ -313,7 +322,6 @@ def create_graph(
                         data.update(**edge_data)
                         G.add_edge(id_seq, id_tar, **data)
                         break
-
     # Check that G is a DAG
     assert nx.is_directed_acyclic_graph(G), "The graph is not a DAG."
     return G
@@ -344,45 +352,183 @@ def prune_by_window(G: nx.DiGraph, window: int = 1) -> nx.DiGraph:
     return G
 
 
-def linear_S_iter(G: nx.DiGraph, E_val):
+def prune_by_leaf(G: nx.DiGraph, leaf_kind) -> nx.DiGraph:
+    # Define leafs
+    leafs_G = {n: data for n, data in G.nodes(data=True) if data["kind"] == leaf_kind}
+    leafs_G = [k for k in sorted(leafs_G.keys(), key=lambda k: leafs_G[k]["seq"])]
+
+    # Remove non-ancestor leafs
+    anc = nx.ancestors(G, leafs_G[-1])
+    anc.add(leafs_G[-1])
+    G.remove_nodes_from([n for n in G.nodes if n not in anc])
+    return G
+
+
+def linear_S_iter(Gs: Union[List[nx.DiGraph], nx.DiGraph]):
+    Gs = [Gs] if isinstance(Gs, nx.DiGraph) else Gs
     attribute_set = {"kind", "order", "edgecolor", "facecolor", "position", "alpha"}
-    kinds = {G.nodes[n]["kind"]: data for n, data in G.nodes(data=True)}
+    kinds = {}
+    for G in Gs:
+        kinds.update({G.nodes[n]["kind"]: data for n, data in G.nodes(data=True)})
     kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
 
     perm_iter = itertools.permutations(kinds.keys(), len(kinds))
-    for sort in perm_iter:
-        S = nx.DiGraph()
+    for perm in perm_iter:
+        P = nx.DiGraph()
         slots = {k: 0 for k in kinds}
-        monomorphism = dict()
-        for n in sort:
+        # monomorphism = dict()
+        sort = []
+        for n in perm:
             k = n
             s = slots[k]
             # Add monomorphism map
             name = f"s{k}_{s}"
-            monomorphism[n] = name
+            sort.append(name)
+            # monomorphism[n] = name
             # Add node and data
             data = kinds[k].copy()
             data.update({"seq": s})
-            S.add_node(name, **data)
+            P.add_node(name, **data)
+            # Increase slot count
+            slots[k] += 1
+        S, monomorphism = as_supergraph(P, sort=sort)
+
+        yield S, monomorphism
+
+
+def baselines_S(Gs: Union[nx.DiGraph, List[nx.DiGraph]], leaf_kind, toposorts: List[List] = None):
+    Gs = Gs if isinstance(Gs, list) else [Gs]
+
+    if toposorts is None:
+        toposorts = []
+        for G in Gs:
+            toposorts.append(list(nx.topological_sort(G)))
+
+    # Get kinds
+    attribute_set = {"kind", "order", "edgecolor", "facecolor", "position", "alpha"}
+    kinds = {Gs[0].nodes[n]["kind"]: data for n, data in Gs[0].nodes(data=True)}
+    kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
+
+    # Determine partitions
+    largest_nodes = 0
+    largest_depth = 0
+    partitions: List[List[List]] = []
+    for i_G, topo in enumerate(toposorts):
+        partitions.append([])
+        last_leaf = 0
+        for i_n, n in enumerate(topo):
+            if Gs[i_G].nodes[n]["kind"] == leaf_kind:
+                # Determine depth of partition
+                P = Gs[i_G].subgraph(topo[last_leaf:i_n])  # Excludes leaf node
+                depth = len(list(nx.topological_generations(P)))
+
+                # Store largest depth and number of nodes
+                largest_depth = max(largest_depth, depth)
+                largest_nodes = max(largest_nodes, len(P))
+
+                # Add partition
+                partitions[-1].append(topo[last_leaf : i_n + 1])
+                last_leaf = i_n + 1
+
+    # Create two supergraphs
+    S_all = nx.DiGraph()
+    slots = {k: 0 for k in kinds}
+    sort = []
+    for _ in range(largest_nodes):
+        sort.append([])
+        for k, data in kinds.items():
+            if k == leaf_kind:
+                continue
+            s = slots[k]
+            # Add monomorphism map
+            name = f"s{k}_{s}"
+            sort[-1].append(name)
+            # Add node and data
+            data = kinds[k].copy()
+            data.update({"seq": s})
+            S_all.add_node(name, **data)
             # Increase slot count
             slots[k] += 1
 
-        # Add feasible edges
-        for i, n_out in enumerate(sort):
-            name_out = monomorphism[n_out]
-            for _j, n_in in enumerate(sort[i + 1 :]):
-                name_in = monomorphism[n_in]
-                e_S = (name_out, name_in)  # Corresponding edge in S
-                e_kind = (S.nodes[name_out]["kind"], S.nodes[name_in]["kind"])  # Kind of edge
+            # We add feasible edges to previous nodes
+            # if i == 0:
+            #     continue
+            # for k_prev in kinds.keys():
+            #     if k_prev == leaf_kind:
+            #         continue
+            #     if (k_prev, k) in E_val:
+            #         for i_prev in range(i):
+            #             name_prev = f"s{k_prev}_{i_prev}"
+            #             S_all.add_edge(name_prev, name, **edge_data)
 
-                # Add all feasible edges
-                if e_kind in E_val:
-                    S.add_edge(*e_S, **edge_data)
+    # Add leaf node
+    data = kinds[leaf_kind].copy()
+    data.update({"seq": 0})
+    slots[leaf_kind] += 1
+    S_all.add_node(f"s{leaf_kind}_0", **data)
+    sort.append([f"s{leaf_kind}_0"])
+    # for k_prev in kinds.keys():
+    #     if k_prev == leaf_kind:
+    #         continue
+    #     if (k_prev, leaf_kind) in E_val:
+    #         for i_prev in range(largest_nodes):
+    #             S_top.add_edge(f"s{k_prev}_{i_prev}", f"s{leaf_kind}_0", **edge_data)
+    S_top, _ = as_supergraph(S_all, sort=sort)
 
-        # Set positions of nodes
-        generations = list(nx.topological_generations(S))
-        for i_gen, gen in enumerate(generations):
-            for i_node, n in enumerate(gen):
-                S.nodes[n]["position"] = (i_gen, i_node)
-                S.nodes[n]["generation"] = i_gen
-        yield S, monomorphism
+    # Create supergraph with only the largest depth
+    sort_gen = sort[-(largest_depth + 1) :]
+    S_gen, _ = as_supergraph(S_all.subgraph([n for gen in sort_gen for n in gen]).copy(), sort=sort_gen)
+    # S_gen = S_top.subgraph([n for gen in generations[:largest_depth] for n in gen] + generations[-1]).copy()
+    return S_top, S_gen
+
+    # # Set positions of nodes
+    # generations = list(nx.topological_generations(S_top))
+    # for i_gen, gen in enumerate(generations):
+    #     for i_node, n in enumerate(gen):
+    #         S_top.nodes[n]["position"] = (i_gen, i_node)
+    #         S_top.nodes[n]["generation"] = i_gen
+    #
+    # # Set positions of nodes
+    # generations = list(nx.topological_generations(S_gen))
+    # for i_gen, gen in enumerate(generations):
+    #     for i_node, n in enumerate(gen):
+    #         S_gen.nodes[n]["position"] = (i_gen, i_node)
+    #         S_gen.nodes[n]["generation"] = i_gen
+    #
+    #
+    # import matplotlib.pyplot as plt
+    # fig, axes = plt.subplots(nrows=2)
+    # fig.set_size_inches(12, 15)
+    # plot_graph(axes[0], S_top)
+    # plot_graph(axes[1], S_gen)
+    # plt.show()
+
+
+def perfect_sort(P):
+    """Sorts a partition into the optimal topological order.
+
+    Only valid if there is never a cycle between kinds within every possible partition.
+
+    E.g. A->B->C->A is allowed if A is the leaf kind, but not if B is the leaf kind (because then the cycle A->C->A may exist).
+
+    NOTE: The sort does not take into account what the leaf node is
+    """
+    kinds_super = {}
+    kinds_new = {}
+    for node in P.nodes:
+        kind = P.nodes[node]["kind"]
+        kinds_dict = kinds_super if node[0] == "s" else kinds_new
+        if kind not in kinds_dict:
+            kinds_dict[kind] = []
+        kinds_dict[kind].append(node)
+    # Use a regex that sorts super kind
+    kinds_super = {k: sorted(v, key=lambda x: int(x.split("_")[-1])) for k, v in kinds_super.items()}
+    kinds_new = {k: sorted(v, key=lambda x: int(x.split("_")[-1])) for k, v in kinds_new.items()}
+    kinds = sorted(set(kinds_super.keys()).union(set(kinds_new.keys())), reverse=False)
+    sort = []
+    for kind in kinds:
+        if kind in kinds_super:
+            sort += kinds_super[kind]
+        if kind in kinds_new:
+            sort += kinds_new[kind]
+    return sort

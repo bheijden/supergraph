@@ -87,10 +87,10 @@ if __name__ == "__main__":
 
     # Get initial supergraph
     _E_val = supergraph.deprecated.get_set_of_feasible_edges(G)
-    S_init, monomorphism = sg.sort_to_S(G, [f"{LEAF_KIND}_0"], _E_val)
+    S_init, monomorphism = supergraph.deprecated.sort_to_S(G, [f"{LEAF_KIND}_0"], _E_val)
 
     # Supergraph
-    S_rec, *_ = sg.grow_supergraph(G, S_init, LEAF_KIND, _E_val)
+    S_rec, *_ = sg.grow_supergraph(G, S_init, LEAF_KIND)
 
     # Partition
     P = supergraph.deprecated.balanced_partition(G, root_kind=ROOT_KIND)
@@ -165,7 +165,7 @@ if __name__ == "__main__":
                     P_monomorphism[node_p] = monomorphism[node_p]
 
             # Verify that P_monomorphism is a valid mapping
-            assert sg.check_monomorphism(new_S, P, P_monomorphism), "P_monomorphism is not a valid mapping."
+            assert supergraph.deprecated.check_monomorphism(new_S, P, P_monomorphism), "P_monomorphism is not a valid mapping."
             P_to_S[k] = {new_S: P_monomorphism}
 
             # Filter out added nodes from S_monomorphism

@@ -2,7 +2,7 @@ __version__ = "0.0.1"
 
 import itertools
 import tqdm
-from typing import List, Dict, Tuple, Set, Any
+from typing import List, Dict, Tuple, Set, Any, Union, Callable
 from collections import deque
 import networkx as nx
 
@@ -11,49 +11,58 @@ def _is_node_attr_match(motif_node_id: str, host_node_id: str, motif: nx.DiGraph
     return host.nodes[host_node_id]["kind"] == motif.nodes[motif_node_id]["kind"]
 
 
-def sort_to_S(P: nx.DiGraph, sort, E_val, as_tc: bool = False) -> Tuple[nx.DiGraph, Dict[Any, Any]]:
+def as_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, sort_fn: Callable = None):
     attribute_set = {"kind", "order", "edgecolor", "facecolor", "position", "alpha"}
     kinds = {P.nodes[n]["kind"]: data for n, data in P.nodes(data=True)}
     kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
     edge_attribute_set = {"color", "linestyle", "alpha"}
-    edge_data = {a: d for a, d in next(iter(P.edges(data=True)))[-1].items() if a in edge_attribute_set}
+    try:
+        edge_data = {a: d for a, d in next(iter(P.edges(data=True)))[-1].items() if a in edge_attribute_set}
+    except StopIteration:
+        # No edges in P
+        edge_data = dict()
+
+    # Generate a topological sort if none is provided
+    sort_fn = sort_fn or (lambda P: list(nx.topological_sort(P)))
+    if sort is None:
+        sort = sort_fn(P)
+        if leaf_kind is not None:
+            for n in reversed(sort):
+                if P.nodes[n]["kind"] == leaf_kind:
+                    sort.remove(n)
+                    sort.append(n)
+
+    # Convert sort to gen
+    for i, s in enumerate(sort):
+        if not isinstance(s, list):
+            sort[i] = [s]
+    sort: List[List]
+
+    # Add nodes
     S = nx.DiGraph()
     slots = {k: 0 for k in kinds}
     monomorphism = dict()
-    for n in sort:
-        k = P.nodes[n]["kind"]
-        s = slots[k]
-        # Add monomorphism map
-        name = f"s{k}_{s}"
-        monomorphism[n] = name
-        # Add node and data
-        data = kinds[k].copy()
-        data.update({"seq": s})
-        S.add_node(name, **data)
-        # Increase slot count
-        slots[k] += 1
+    for i, gen in enumerate(sort):
+        for n in gen:
+            k = P.nodes[n]["kind"]
+            s = slots[k]
+            # Add monomorphism map
+            name = f"s{k}_{s}"
+            monomorphism[n] = name
+            # Add node and data
+            data = kinds[k].copy()
+            data.update({"seq": s, "generation": i, "position": (i, 0)})
+            S.add_node(name, **data)
+            # Increase slot count
+            slots[k] += 1
+            # Add edge to previous node
+            if i > 0:
+                for n_prev in sort[i - 1]:
+                    S.add_edge(monomorphism[n_prev], name, **edge_data)
 
-    # Add feasible edges
-    for i, n_out in enumerate(sort):
-        name_out = monomorphism[n_out]
-        for _j, n_in in enumerate(sort[i + 1 :]):
-            name_in = monomorphism[n_in]
-            e_P = (n_out, n_in)  # Edge in P
-            e_S = (name_out, name_in)  # Corresponding edge in S
-            e_kind = (S.nodes[name_out]["kind"], S.nodes[name_in]["kind"])  # Kind of edge
-
-            # Add edge if it is in P or if we are adding all feasible edges
-            if e_P in P.edges:
-                S.add_edge(*e_S, **edge_data)
-            elif as_tc and e_kind in E_val:
-                S.add_edge(*e_S, **edge_data)
-
-    # Set positions of nodes
     generations = list(nx.topological_generations(S))
-    for i_gen, gen in enumerate(generations):
-        for i_node, n in enumerate(gen):
-            S.nodes[n]["position"] = (i_gen, i_node)
-            S.nodes[n]["generation"] = i_gen
+    assert all([S.nodes[g[0]]["generation"] == i_gen for i_gen, g in enumerate(generations)])
+    assert leaf_kind is None or S.out_degree[f"s{leaf_kind}_0"] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
     return S, monomorphism
 
 
@@ -73,10 +82,10 @@ def unify(G1, G2, E):
     return G
 
 
-def check_monomorphism(host: nx.DiGraph, motif: nx.DiGraph, mapping: Dict[str, str]) -> bool:
+def check_order(host: nx.DiGraph, motif: nx.DiGraph, mapping: Dict[str, str]) -> bool:
     check_edges = all(
         [
-            host.has_edge(mapping[motif_u], mapping[motif_v])  # todo: only check depth.
+            host.nodes[mapping[motif_u]]["generation"] < host.nodes[mapping[motif_v]]["generation"]  # todo: only check depth.
             for motif_u, motif_v in motif.edges
             if motif_u in mapping and motif_v in mapping
         ]
@@ -97,51 +106,100 @@ def generate_power_set(sequence, include_empty_set: bool = True, include_full_se
     return power_set
 
 
-def evaluate_supergraph(G: nx.DiGraph, S: nx.DiGraph):
+def generate_linear_set(sequence, include_empty_set: bool = True, include_full_set: bool = True):
+    power_set = []
+    start = 0 if include_empty_set else 1
+    stop = len(sequence) + 1 if include_full_set else len(sequence)
+
+    for r in reversed(range(start, stop)):
+        combinations = itertools.combinations(sequence, r)
+        try:
+            c = next(combinations)
+            # print(r, len(c))
+            power_set.append(c)
+        except StopIteration:
+            pass
+        # power_set.append(combinations)
+
+    return power_set
+
+
+def evaluate_supergraph(Gs: Union[List[nx.DiGraph], nx.DiGraph], S: nx.DiGraph, progress_bar: bool = False, name: str = None):
+    Gs = [Gs] if isinstance(Gs, nx.DiGraph) else Gs
+
+    # Chain the iterators together
+    num_nodes = sum([G.number_of_nodes() for G in Gs])
+    matched_nodes = 0
+    desc = f"{name} | Matching nodes" if name is not None else "Matching nodes"
+    pbar = tqdm.tqdm(total=num_nodes, desc=desc)
+
     # Get host generations
     generations_S = list(nx.topological_generations(S))
 
-    # Use first generation of motif as the initial front (i.e. nodes with in_degree=0)
-    front = [n for n in G if G.in_degree(n) == 0]
+    Gs_monomorphisms = []
+    Gs_units = []
+    Gs_nodes = []
+    for i_G, G in enumerate(Gs):
+        # Use first generation of motif as the initial front (i.e. nodes with in_degree=0)
+        front = [n for n in G if G.in_degree(n) == 0]
 
-    # Prepare matched in_degree counter for motif
-    matched_in_degree = {n: 0 for n in G}
+        # Prepare matched in_degree counter for motif
+        matched_in_degree = {n: 0 for n in G}
 
-    # Initialize empty monomorphism map
-    monomorphism = dict()
+        # Initialize empty monomorphism map
+        monomorphism = dict()
 
-    # Iterate over generations
-    # NOTE: Assumes that at any point in time, each node in the front is of a different kind
-    i_unit = 0
-    mono_size = len(monomorphism)
-    while mono_size < len(G):
-        assert len(front) > 0, "No more nodes in front but not all nodes in G have been matched"
-        # Iterate over all generations of supergraph
-        for _i_gen_S, gen_S in enumerate(generations_S):
-            if len(front) == 0:
-                break
-            new_front = []
-            for n_S in gen_S:
+        # Iterate over generations
+        # NOTE: Assumes that at any point in time, each node in the front is of a different kind
+        i_unit = 0
+        mono_size = len(monomorphism)
+        while mono_size < len(G):
+            assert len(front) > 0, "No more nodes in front but not all nodes in G have been matched"
+            # Iterate over all generations of supergraph
+            for _i_gen_S, gen_S in enumerate(generations_S):
                 if len(front) == 0:
                     break
-                for n_G in front:
-                    if _is_node_attr_match(n_G, n_S, G, S):
-                        monomorphism[n_G] = f"u{i_unit}_{n_S}"
-                        front.remove(n_G)
-                        for n_G_child in G.successors(n_G):
-                            matched_in_degree[n_G_child] += 1
-                            if G.in_degree(n_G_child) == matched_in_degree[n_G_child]:
-                                new_front.append(n_G_child)
+                new_front = []
+                for n_S in gen_S:
+                    if len(front) == 0:
                         break
-            front += new_front
+                    for n_G in front:
+                        if _is_node_attr_match(n_G, n_S, G, S):
+                            monomorphism[n_G] = (i_unit, n_S)
+                            matched_nodes += 1
+                            front.remove(n_G)
+                            for n_G_child in G.successors(n_G):
+                                matched_in_degree[n_G_child] += 1
+                                if G.in_degree(n_G_child) == matched_in_degree[n_G_child]:
+                                    new_front.append(n_G_child)
+                            break
+                front += new_front
 
-        # Check if new nodes have been matched since last iteration
-        assert len(monomorphism) > mono_size, "No new nodes have been matched"
-        mono_size = len(monomorphism)
+            # Check if new nodes have been matched since last iteration
+            new_size = len(monomorphism)
+            new_matches = new_size - mono_size
+            assert new_matches > 0, "No new nodes have been matched"
+            mono_size = new_size
 
-        # Increment unit counter
-        i_unit += 1
-    return i_unit, i_unit * len(S), monomorphism
+            # Increment unit counter
+            i_unit += 1
+
+            # Update progress bar
+            if progress_bar:
+                size = len(S)
+                num_Gs = len(Gs)
+                supergraph_nodes = size * (i_unit + sum(Gs_units))
+                efficiency = matched_nodes / supergraph_nodes
+                pbar.set_postfix_str(
+                    f"{i_G+1}/{num_Gs} graphs, {matched_nodes}/{num_nodes} matched ({efficiency:.2%} efficiency, {size} nodes)"
+                )
+                pbar.update(new_matches)
+
+        Gs_monomorphisms.append(monomorphism)
+        Gs_units.append(i_unit)
+        Gs_nodes.append(i_unit * len(S))
+    assert matched_nodes == num_nodes, "Not all nodes in G have been matched"
+    return Gs_monomorphisms
     # raise NotImplementedError("TODO: Implement supergraph evaluation")
     # assert check_monomorphism(S, G, monomorphism)
 
@@ -205,7 +263,12 @@ def match_supergraph_iter(
     return
 
 
-def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtrack: int = 3):
+def grow_supergraph_iter(
+    G: nx.DiGraph, S: nx.DiGraph, leaf_kind, combination_mode: str = "linear", backtrack: int = 3, sort_fn: Callable = None
+):
+    assert combination_mode in ["linear", "power"], f"Invalid combination mode {combination_mode}"
+    combinations_fn = generate_linear_set if combination_mode == "linear" else generate_power_set
+
     # Get & sort leaf nodes
     leafs_G = {n: data for n, data in G.nodes(data=True) if data["kind"] == leaf_kind}
     leafs_G = [k for k in sorted(leafs_G.keys(), key=lambda k: leafs_G[k]["seq"])]
@@ -229,7 +292,7 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
     matched_in_degree = {n: 0 for n in G}
 
     # Initialize empty monomorphism map
-    G_monomorphism = dict()
+    G_monomorphism: Dict[Any, Tuple[int, Any]] = dict()
 
     # Initialize supergraph mapping
     S_init_to_S = {n: n for n in S}
@@ -280,7 +343,8 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
                     next_front.add(n_G_child)
 
             # Add matched nodes to G_monomorphism
-            G_monomorphism.update(monomorphism)
+            i_monomorphism = {k: (i_partition, v) for k, v in monomorphism.items()}
+            G_monomorphism.update(i_monomorphism)
             delta_G_monomorphism.update(monomorphism)
 
             # Remove largest_monomorphism nodes from G_unmatched
@@ -339,8 +403,8 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
                 # In search of the largest match, we systematically exclude nodes from the constrained_front and try to find a match.
                 # If no match is found, we exclude more nodes from the constrained_front and try again.
                 assert len(constrained_front) > 0, "what if constrained_front is empty?"
-                power_set = generate_power_set(constrained_front, include_empty_set=False)
-                for var_front in power_set:
+                combinations = combinations_fn(constrained_front, include_empty_set=False)
+                for var_front in combinations:
                     var_front = set(var_front)
 
                     # We short-circuit the largest search when we cannot find a larger match. This may happen in two cases:
@@ -355,7 +419,7 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
                     # Use union of var_front and optional_front as front
                     front = var_front.union(optional_front)
 
-                    # Mutate matched_in_degree for nodes excluded in power_set (i.e. nodes not in constrained_front but in var_front)
+                    # Mutate matched_in_degree for nodes excluded in combinations (i.e. nodes not in constrained_front but in var_front)
                     _delta_matched_in_degree = dict()  # Record difference in matched degree
                     for n_G in constrained_front.difference(var_front):
                         for n_G_child in G.successors(n_G):
@@ -381,7 +445,7 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
                         largest_monomorphism = monomorphism
                         largest_size = matched_size
 
-                # Mutate matched_in_degree for nodes excluded in power_set (i.e. nodes not in constrained_front but in var_front)
+                # Mutate matched_in_degree for nodes excluded in combinations (i.e. nodes not in constrained_front but in var_front)
                 excluded_from_search = excluded_from_search.union(constrained_front)
                 next_front = optional_front
                 for n_G in constrained_front:
@@ -397,7 +461,7 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
             # Determine the constrained subgraph P that must be matched
             nodes_P = ancestors.union(largest_monomorphism.keys())
             P = G.subgraph(nodes_P)
-            assert check_monomorphism(S, P, largest_monomorphism)
+            assert check_order(S, P, largest_monomorphism)
 
             # Create mapping of nodes from S to P
             mcs = {node_S: node_P for node_P, node_S in largest_monomorphism.items()}
@@ -429,16 +493,12 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
             assert nx.is_directed_acyclic_graph(P_unified_with_S), "Should be a DAG."
 
             # Convert P_unified_with_S to S
-            topo_sort = list(
-                nx.topological_sort(P_unified_with_S.subgraph([n for n in P_unified_with_S.nodes() if n != leaf_S]))
-            )
-            topo_sort.append(leaf_S)  # Ensure that leaf_S is the last node in the sort of P_unified_with_S
-            new_S, new_mono = sort_to_S(P_unified_with_S, topo_sort, E_val, as_tc=True)
+            new_S, new_mono = as_supergraph(P_unified_with_S, leaf_kind=leaf_kind, sort_fn=sort_fn)
             assert S.out_degree[list(leafs_S.keys())[0]] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
 
             # Update S and related variables
             S_to_new_S = {node_p: node_S for node_p, node_S in new_mono.items() if node_p in S.nodes}
-            S_init_to_S = {node_S_init: node_S for node_S_init, node_S in S_init_to_S.items()}
+            S_init_to_S = {node_S_init: new_mono[node_S] for node_S_init, node_S in S_init_to_S.items()}
             S = new_S
             num_nodes_S = len(S) - 1  # Excluding the leaf node
             generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
@@ -456,7 +516,7 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
                     G_monomorphism.pop(k)
 
             # Update G_monomorphism from S to new_S
-            G_monomorphism = {node_G: S_to_new_S[node_S] for node_G, node_S in G_monomorphism.items()}
+            G_monomorphism = {node_G: (i, S_to_new_S[node_S]) for node_G, (i, node_S) in G_monomorphism.items()}
 
             # Reinitialize G_unmatched with nodes not already matched
             G_unmatched = G.copy()
@@ -469,36 +529,214 @@ def grow_supergraph_iter(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtra
             state_history = deque(maxlen=backtrack + 1)
 
 
-class GrowSuperGraphIter:
-    def __init__(self, G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtrack: int = 3):
-        leafs_G = {n: data for n, data in G.nodes(data=True) if data["kind"] == leaf_kind}
-        self._num_partitions = len(leafs_G)
-        self.iter = grow_supergraph_iter(G, S, leaf_kind, E_val, backtrack)
+def grow_supergraph(
+    Gs: Union[List[nx.DiGraph], nx.DiGraph],
+    S: nx.DiGraph,
+    leaf_kind,
+    combination_mode: str = "linear",
+    backtrack: int = 3,
+    sort_fn: Callable = None,
+    progress_bar: bool = True,
+    validate: bool = False,
+):
+    S_init_size = len(S)
+    Gs = [Gs] if isinstance(Gs, nx.DiGraph) else Gs
+    num_Gs = len(Gs)
+    leafs_G = [{n: data for n, data in G.nodes(data=True) if data["kind"] == leaf_kind} for G in Gs]
+    num_partitions = sum([len(leafs) for leafs in leafs_G])
+    num_nodes = sum([len(G) for G in Gs])
 
-    def __iter__(self):
-        return self
+    # Chain the iterators together
+    pbar = tqdm.tqdm(total=num_partitions, desc="Growing supergraph")
 
-    def __next__(self):
-        return next(self.iter)
-
-    def __len__(self):
-        return self._num_partitions
-
-
-def grow_supergraph(G: nx.DiGraph, S: nx.DiGraph, leaf_kind, E_val, backtrack: int = 3, progress_bar: bool = True):
-    grow_iter = GrowSuperGraphIter(G, S, leaf_kind, E_val, backtrack=backtrack)
-    num_nodes = len(G)
-    pbar = tqdm.tqdm(grow_iter) if progress_bar else grow_iter
-
-    S_init_to_S = {}
+    # Main loop to grow the supergraph
+    # S_history = [(0, S)]
+    Gs_monomorphism = []
+    Gs_S_init_to_S = []
+    Gs_matched = []
+    Gs_num_partitions = []
     G_monomorphism = {}
-    for i_partition, _G_unmatched, S, G_monomorphism, _monomorphism, _S_init_to_S in pbar:
-        S_init_to_S = _S_init_to_S
-        if progress_bar:
-            size = len(S)
-            supergraph_nodes = size * (i_partition + 1)
-            matched_nodes = len(G_monomorphism)
-            efficiency = matched_nodes / supergraph_nodes
-            pbar.set_postfix_str(f"matched {matched_nodes}/{num_nodes} ({efficiency:.2%} efficiency, {size} size)")
+    for i_G, G in enumerate(Gs):
+        grow_iter = grow_supergraph_iter(G, S, leaf_kind, combination_mode, backtrack, sort_fn)
+        G_S_init_to_S = {n: n for n in S}
+        for i_partition, _G_unmatched, S, _G_monomorphism, _monomorphism, _G_S_init_to_S in grow_iter:
+            # if len(S) > len(S_history[-1][1]):
+            #     S_history.append((i_G, S))
+            #     if False:
+            #         import matplotlib.pyplot as plt
+            #         from supergraph.evaluate import plot_graph
+            #         fig, axes = plt.subplots(nrows=len(S_history), sharey=True, sharex=True)
+            #         fig.set_size_inches(12, 15)
+            #         [plot_graph(axes[i], s) for i, (idx, s) in enumerate(S_history)]
+            #         [axes[i].set_ylabel(f"graph {idx}") for i, (idx, s) in enumerate(S_history)]
+            #         plt.show()
+            G_S_init_to_S = _G_S_init_to_S
+            G_monomorphism = _G_monomorphism
+            if progress_bar:
+                size = len(S)
+                supergraph_nodes = size * (i_partition + 1 + sum(Gs_num_partitions))
+                matched_nodes = len(G_monomorphism) + sum(Gs_matched)
+                efficiency = matched_nodes / supergraph_nodes
+                pbar.set_postfix_str(
+                    f"{i_G+1}/{num_Gs} graphs, {matched_nodes}/{num_nodes} matched ({efficiency:.2%} efficiency, {size} nodes)"
+                )
+                pbar.update(1)
 
-    return S, S_init_to_S, G_monomorphism
+        # Save monomorphism
+        Gs_num_partitions.append(i_partition + 1)
+        Gs_matched.append(len(G_monomorphism))
+        Gs_monomorphism.append(G_monomorphism)
+        Gs_S_init_to_S.append(G_S_init_to_S)
+
+    # Map intermediate S to final S
+    Gs_S_to_S_final = []
+    G_S_to_S_final = {n: n for n in S}
+    for _, G_S_to_S in enumerate(reversed(Gs_S_init_to_S)):
+        Gs_S_to_S_final.append(G_S_to_S_final)
+        G_S_to_S_final = {n: G_S_to_S_final[v] for n, v in G_S_to_S.items()}
+    S_init_to_S_final = G_S_to_S_final  # maps final S to S_init (the one provided as argument to this function)
+    Gs_S_to_S_final = list(reversed(Gs_S_to_S_final))
+
+    # Check that size of Gs_S_to_S_final is monotonically increasing
+    assert all(
+        [len(Gs_S_to_S_final[i]) <= len(Gs_S_to_S_final[i + 1]) for i in range(0, len(Gs_S_to_S_final) - 1)]
+    ), "Size of Gs_S_to_S_final is not monotonically increasing"
+    assert len(S_init_to_S_final) == S_init_size, "Size of S_init_to_S_final is not equal to size of S_init"
+
+    # Map monomorphism to final S
+    Gs_monomorphism_final = []
+    for i_G, (G_S_to_S_final, G_monomorphism) in enumerate(zip(Gs_S_to_S_final, Gs_monomorphism)):
+        G_monomorphism_final = {n: (i, G_S_to_S_final[v]) for n, (i, v) in G_monomorphism.items()}
+        Gs_monomorphism_final.append(G_monomorphism_final)
+
+        # Sort G_monomorphism_final by partition index
+        if validate:
+            partitions = {}
+            for n, (i, v) in G_monomorphism_final.items():
+                if i not in partitions:
+                    partitions[i] = {}
+                partitions[i][n] = v
+            for _i, partition in partitions.items():
+                P = Gs[i_G].subgraph(partition.keys())
+                is_mono = check_order(S, P, partition)
+                assert is_mono, "Remapped monomorphism is not a valid with respect to the order of the supergraph"
+                # if not is_mono:
+                #     print(f"Monomorphism is not a valid order for graph {i_G} partition {i}")
+                #     # raise ValueError("Monomorphism is not a valid order")
+                #     host = S
+                #     motif = P
+                #     mapping = partition
+                #     check_edges = [
+                #         (
+                #             motif_u,
+                #             motif_v,
+                #             host.nodes[mapping[motif_u]]["generation"] < host.nodes[mapping[motif_v]]["generation"],
+                #         )
+                #         for motif_u, motif_v in motif.edges
+                #         if motif_u in mapping and motif_v in mapping
+                #     ]
+                #     check_nodes = all(
+                #         [_is_node_attr_match(motif_n, host_n, motif, host) for motif_n, host_n in mapping.items()]
+                #     )
+                #     import matplotlib.pyplot as plt
+                #     from supergraph.evaluate import plot_graph
+                #
+                #     fig, axes = plt.subplots(nrows=2)
+                #     fig.set_size_inches(12, 15)
+                #     plot_graph(axes[0], S)
+                #     plot_graph(axes[1], P)
+                #     plt.show()
+    return S, S_init_to_S_final, Gs_monomorphism_final
+
+
+# def ancestral_partition(G, leaf_kind):
+#     # Copy Graph
+#     G = G.copy(as_view=False)
+#
+#     # Count number of nodes of each type
+#     node_types: Dict[str, Dict[str, Dict]] = {}
+#     for n, data in G.nodes(data=True):
+#         if data["kind"] not in node_types:
+#             node_types[data["kind"]] = dict()
+#         node_types[data["kind"]][n] = data
+#
+#     # Sort nodes of each type by sequence number
+#     for k, v in node_types.items():
+#         node_types[k] = {k: v[k] for k in sorted(v.keys(), key=lambda k: v[k]["seq"])}
+#
+#     # Define ideal partition size
+#     leafs = node_types[leaf_kind]
+#     num_partitions = len(leafs)
+#     size_ideal = {k: -(-len(v) // num_partitions) for k, v in node_types.items()}
+#     assert (min([len(v) for v in node_types.values()]) > 0), "The minimum number of nodes of every type per partition must be > 0."
+#
+#     P = {}
+#     G_partition = {}
+#     for k, (leaf, data) in enumerate(leafs.items()):
+#         ancestors = list(nx.ancestors(G, leaf))
+#         ancestors_leaf = ancestors + [leaf]
+#
+#         # Get subgraph
+#         g = nx.DiGraph()
+#         g.add_node(leaf, **G.nodes[leaf])
+#         for n in ancestors_leaf:
+#             g.add_node(n, **G.nodes[n])
+#         for (o, i, data) in G.edges(ancestors_leaf, data=True):
+#             if o in ancestors_leaf and i in ancestors_leaf:
+#                 g.add_edge(o, i, **data)
+#         # Add generation information to nodes
+#         generations = nx.topological_generations(g)
+#         for i_gen, gen in enumerate(generations):
+#             for n in gen:
+#                 g.nodes[n]["generation"] = i_gen
+#                 # g.nodes[n]["ancestors"] = list(nx.ancestors(g, n))
+#                 # g.nodes[n]["descendants"] = list(nx.descendants(g, n))
+#         P[k] = g
+#
+#         # Get subgraph
+#         G_partition[k] = G.subgraph(ancestors_leaf).copy(as_view=False)
+#
+#         # Remove nodes
+#         G.remove_nodes_from(ancestors_leaf)
+#
+#     # for k in P.keys():
+#     #     assert P[k].edges() == G_partition[k].edges()
+#     #     for n, data in P[k].nodes(data=True):
+#     #         for key, val in data.items():
+#     #             if key == "generation":
+#     #                 continue
+#     #             print(key, val==G_partition[k].nodes[n][key])
+#
+#     new_P = {}
+#     for i, p in P.items():
+#         s = size_ideal.copy()
+#
+#         # Prepare partitioning
+#         matched_out_degree = dict(p.out_degree())
+#         front = [n for n, od in matched_out_degree.items() if od == 0]
+#         assert len(front) == 1, "There must be only one node with out_degree=0 (the partition's leaf node)."
+#         ideal_partition = []
+#         while len(front) > 0:
+#             last_size = len(ideal_partition)
+#
+#             n_p = front.pop(0)
+#             if s[p.nodes[n_p]["kind"]] > 0:
+#
+#                 # Add to ideal partition
+#                 ideal_partition.append(n_p)
+#                 s[p.nodes[n_p]["kind"]] -= 1  # Decrement size counter
+#
+#                 # increase matched out_degree by +1
+#                 for n_p_parent in p.predecessors(n_p):
+#                     matched_out_degree[n_p_parent] -= 1
+#                     if matched_out_degree[n_p_parent] == 0:
+#                         front.append(n_p_parent)
+#
+#             if len(ideal_partition) == last_size:
+#                 break
+#         matched_nodes = len(ideal_partition)
+#         total_nodes = sum([num for k, num in size_ideal.items()])
+#         # print(f"Partition {i}: {matched_nodes}/{total_nodes} nodes matched.")
+#         new_P[i] = p.subgraph(ideal_partition).copy(as_view=False)
+#
+#     return new_P
