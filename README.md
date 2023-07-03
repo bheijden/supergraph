@@ -2,7 +2,7 @@
 
 [![license](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![codestyle](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Continuous Integration](https://github.com/bheijden/supergraph/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/eager-dev/eagerx_template/actions/workflows/ci.yml)
+[![Continuous Integration](https://github.com/bheijden/supergraph/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/bheijden/supergraph/actions/workflows/ci.yml)
 [![Test Coverage](coverage.svg)](https://github.com/bheijden/supergraph/actions/workflows/ci.yml)
 
 
