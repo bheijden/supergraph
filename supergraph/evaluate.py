@@ -222,7 +222,7 @@ def run_excalidraw_example():
 
 
 def ornstein_uhlenbeck_samples(rng, theta, mu, sigma, dt, x0, n):
-    X = np.zeros(n)
+    X = np.zeros(n, dtype="float32")
     X[0] = x0
     for i in range(1, n):
         dW = rng.normal(0, np.sqrt(dt))
@@ -237,7 +237,9 @@ def create_graph(
     seed: int = 0,
     theta: float = 0.07,
     sigma: float = 0.1,
-    progress_bar: bool = True,
+    progress_bar: bool = False,
+    return_ts: bool = False,
+    with_attributes: bool = True,
 ):
     assert all([T > 1 / _f for _f in fs]), "The largest sampling time must be smaller than the simulated time T."
 
@@ -265,16 +267,17 @@ def create_graph(
         partial(ornstein_uhlenbeck_samples, rng=rng, theta=theta, mu=1 / f, sigma=sigma / f, dt=1 / f, x0=1 / f) for f in fs
     ]
     dt = [
-        np.stack((np.linspace(1 / f, T, ceil(T * f)), np.clip(fn(n=ceil(T * f)), 1 / f, np.inf))) for f, fn in zip(fs, fn_dt)
+        np.stack((np.linspace(1 / f, T, ceil(T * f)), np.clip(fn(n=ceil(T * f)), 1 / f, np.inf)), dtype="float32") for f, fn in zip(fs, fn_dt)
     ]
-    ts = [np.stack((_dt[0], np.cumsum(_dt[1]))) for _dt in dt]
-    ts = [np.concatenate((np.array([[0.0], [0.0]]), _ts), axis=1) for _ts in ts]
+    ts = [np.stack((_dt[0], np.cumsum(_dt[1])), dtype="float32") for _dt in dt]
+    ts = [np.concatenate((np.array([[0.0], [0.0]]), _ts), axis=1, dtype="float32") for _ts in ts]
 
     # Find where entries ts are ts < min_ts
     min_ts = np.min([_ts[1][-1] for _ts in ts])
     idx = [np.where(_ts[1] < min_ts)[0] for _ts in ts]
     ts = [_ts[:, _idx] for _idx, _ts in zip(idx, ts)]
 
+    # import matplotlib.pyplot as plt
     # fig, ax = plt.subplots(nrows=1, ncols=1)
     # [ax.plot(*_dt) for _dt in dt]
     #
@@ -291,9 +294,9 @@ def create_graph(
     for n, (_f, _ts) in enumerate(zip(fs, ts)):
         node_kinds[n] = []
         for i, __ts in enumerate(_ts[1]):
-            data = dict(
-                kind=n, seq=i, ts=__ts, order=n, edgecolor=ecolor[n], facecolor=fcolor[n], position=(__ts, n), alpha=1.0
-            )
+            data = dict(kind=n, seq=i, ts=__ts)
+            if with_attributes:
+                data.update(order=n, edgecolor=ecolor[n], facecolor=fcolor[n], position=(__ts, n), alpha=1.0)
             id = f"{n}_{i}"
             G.add_node(id, **data)
             node_kinds[n].append(id)
@@ -305,8 +308,9 @@ def create_graph(
         for idx, id_seq in enumerate(node_kinds[o]):
             data_source = G.nodes[id_seq]
             if idx > 0 and o == i:  # Add stateful edge
-                data = {"delay": 0.0, "pruned": False}
-                data.update(**edge_data)
+                data = {}
+                if with_attributes:
+                    data.update(**edge_data)
                 G.add_edge(node_kinds[i][idx - 1], id_seq, **data)
             else:
                 for id_tar in node_kinds[i][_seq:]:
@@ -318,13 +322,17 @@ def create_graph(
                     else:  # To break cycles
                         must_connect = data_target["ts"] > data_source["ts"]
                     if must_connect:
-                        data = {"delay": 0.0, "pruned": False}
-                        data.update(**edge_data)
+                        data = {}
+                        if with_attributes:
+                            data.update(**edge_data)
                         G.add_edge(id_seq, id_tar, **data)
                         break
     # Check that G is a DAG
     assert nx.is_directed_acyclic_graph(G), "The graph is not a DAG."
-    return G
+    if return_ts:
+        return G, ts
+    else:
+        return G
 
 
 def prune_by_window(G: nx.DiGraph, window: int = 1) -> nx.DiGraph:
@@ -532,3 +540,61 @@ def perfect_sort(P):
         if kind in kinds_new:
             sort += kinds_new[kind]
     return sort
+
+
+def to_numpy(G: nx.DiGraph) -> Tuple[np.ndarray, np.ndarray]:
+    ts = np.empty((len(G.nodes), 2), dtype="float32")
+    topo = list(nx.topological_sort(G))
+    for i, n in enumerate(topo):
+        ts[i, 0] = G.nodes[n]["kind"]
+        ts[i, 1] = G.nodes[n]["ts"]
+    edges = np.empty((len(G.edges), 2, 2), dtype="uint16")
+    for i, (u, v) in enumerate(G.edges):
+        u_data = G.nodes[u]
+        v_data = G.nodes[v]
+        u_kind, u_seq = u_data["kind"], u_data["seq"]
+        v_kind, v_seq = v_data["kind"], v_data["seq"]
+        edges[i, 0, 0] = u_kind
+        edges[i, 0, 1] = u_seq
+        edges[i, 1, 0] = v_kind
+        edges[i, 1, 1] = v_seq
+
+    # Get bytesize of names and kinds
+    # ts_bytesize = reduce(mul, ts.shape, 1) * ts.dtype.itemsize
+    # edges_bytesize = reduce(mul, edges.shape, 1) * edges.dtype.itemsize
+    # total_bytesize = ts_bytesize + edges_bytesize
+    # print(total_bytesize)
+    return edges, ts
+
+
+def from_numpy(edges: np.ndarray, ts: np.ndarray = None) -> nx.DiGraph:
+    # Convert edges to graph
+    G = nx.DiGraph()
+    for i in range(edges.shape[0]):
+        u_kind, u_seq = edges[i, 0, 0], edges[i, 0, 1]
+        v_kind, v_seq = edges[i, 1, 0], edges[i, 1, 1]
+        u = f"{u_kind}_{u_seq}"
+        v = f"{v_kind}_{v_seq}"
+        G.add_edge(u, v)
+        G.nodes[u]["kind"] = u_kind
+        G.nodes[u]["seq"] = u_seq
+        G.nodes[v]["kind"] = v_kind
+        G.nodes[v]["seq"] = v_seq
+
+    # Add timestamps
+    if ts is not None:
+        kinds = {}
+        for i in range(ts.shape[0]):
+            k, t = ts[i]
+            if k not in kinds:
+                kinds[k] = 0
+            seq = kinds[k]
+            n = f"{int(k)}_{seq}"
+            G.nodes[n]["ts"] = t
+            kinds[k] += 1
+    return G
+
+
+def to_graph_name(seed, frequency_type, topology_type, theta, sigma, window, num_nodes, max_freq, episodes, length, leaf_kind):
+    name = f"graph-{topology_type}-{frequency_type}-{theta}-{sigma}-{window}-{num_nodes}-{max_freq}-{episodes}-{length}-{leaf_kind}-{seed}"
+    return name

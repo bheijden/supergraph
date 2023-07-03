@@ -11,9 +11,9 @@ if __name__ == '__main__':
 	MUST_PLOT = False
 	SEED = 11  # 22
 	THETA = 0.07
-	SIGMA = 0.1
+	SIGMA = 0.0
 	WINDOW = 0
-	NUM_NODES = 20  # 10
+	NUM_NODES = 4  # 10
 	MAX_FREQ = 200
 	COMBINATION_MODE = "linear"
 	EPISODES = 2
@@ -27,19 +27,25 @@ if __name__ == '__main__':
 	# Define graph
 	# fs = [1+i*(MAX_FREQ-1)/(NUM_NODES-1) for i in range(0, NUM_NODES)]
 	fs = [float(i) for i in range(1, NUM_NODES)] + [MAX_FREQ]
-	NUM_NODES = len(fs)
 	edges = {(i, (i + 1) % len(fs)) for i in range(len(fs) - 1)}  # Add forward edges
-	# edges.update({(j, i) for i, j in edges})  # Add all reverse edges
-	edges.add((len(fs)-1, 0))  # Add one reverse edge
 	edges.update({(i, i) for i in range(len(fs))})  # Stateful edges
+	edges.update({(j, i) for i, j in edges})  # Add all reverse edges
+	# edges.add((len(fs)-1, 0))  # Add one reverse edge
 
 	# Define graph
 	Gs = []
 	for i in range(EPISODES):
-		G = supergraph.evaluate.create_graph(fs, edges, LENGTH, seed=SEED+i, theta=THETA, sigma=SIGMA)
+		G = supergraph.evaluate.create_graph(fs, edges, LENGTH, seed=SEED+i, theta=THETA, sigma=SIGMA, progress_bar=True)
 		G = supergraph.evaluate.prune_by_window(G, WINDOW)
 		G = supergraph.evaluate.prune_by_leaf(G, LEAF_KIND)
 		Gs.append(G)
+
+	# Save and reload Gs with pickle
+	# import pickle
+	# with open("Gs.pkl", "wb") as f:
+	# 	pickle.dump(Gs, f)
+	# with open("Gs.pkl", "rb") as f:
+	# 	Gs = pickle.load(f)
 
 	# Define initial supergraph
 	S_init, _ = sg.as_supergraph(Gs[0], leaf_kind=LEAF_KIND, sort=[f"{LEAF_KIND}_0"])

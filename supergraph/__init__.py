@@ -2,6 +2,7 @@ __version__ = "0.0.1"
 
 import itertools
 import tqdm
+import time
 from typing import List, Dict, Tuple, Set, Any, Union, Callable
 from collections import deque
 import networkx as nx
@@ -131,7 +132,7 @@ def evaluate_supergraph(Gs: Union[List[nx.DiGraph], nx.DiGraph], S: nx.DiGraph, 
     num_nodes = sum([G.number_of_nodes() for G in Gs])
     matched_nodes = 0
     desc = f"{name} | Matching nodes" if name is not None else "Matching nodes"
-    pbar = tqdm.tqdm(total=num_nodes, desc=desc)
+    pbar = tqdm.tqdm(total=num_nodes, desc=desc, disable=not progress_bar)
 
     # Get host generations
     generations_S = list(nx.topological_generations(S))
@@ -200,8 +201,6 @@ def evaluate_supergraph(Gs: Union[List[nx.DiGraph], nx.DiGraph], S: nx.DiGraph, 
         Gs_nodes.append(i_unit * len(S))
     assert matched_nodes == num_nodes, "Not all nodes in G have been matched"
     return Gs_monomorphisms
-    # raise NotImplementedError("TODO: Implement supergraph evaluation")
-    # assert check_monomorphism(S, G, monomorphism)
 
 
 def match_supergraph_iter(
@@ -263,6 +262,17 @@ def match_supergraph_iter(
     return
 
 
+def _subgraph(G: nx.DiGraph, nodes):
+    return G.subgraph(nodes)
+    # g = nx.DiGraph()
+    # for n in nodes:
+    #     g.add_node(n, **G.nodes[n])
+    # for (o, i, data) in G.edges(nodes, data=True):
+    #     if o in nodes and i in nodes:
+    #         g.add_edge(o, i, **data)
+    # return g
+
+
 def grow_supergraph_iter(
     G: nx.DiGraph, S: nx.DiGraph, leaf_kind, combination_mode: str = "linear", backtrack: int = 3, sort_fn: Callable = None
 ):
@@ -283,7 +293,9 @@ def grow_supergraph_iter(
 
     # Get host generations (excludes leaf node from generations)
     num_nodes_S = len(S) - 1  # Excluding the leaf node
-    generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
+    # generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
+    S_sub = _subgraph(S, set(S.nodes()) - {leaf_S})
+    generations_S = list(nx.topological_generations(S_sub))
 
     # Use first generation of motif as the initial front (i.e. nodes with in_degree=0)
     next_front = {n for n in G if G.in_degree(n) == 0}
@@ -460,15 +472,18 @@ def grow_supergraph_iter(
 
             # Determine the constrained subgraph P that must be matched
             nodes_P = ancestors.union(largest_monomorphism.keys())
-            P = G.subgraph(nodes_P)
+            # P = G.subgraph(nodes_P)
+            P = _subgraph(G, nodes_P)
             assert check_order(S, P, largest_monomorphism)
 
             # Create mapping of nodes from S to P
             mcs = {node_S: node_P for node_P, node_S in largest_monomorphism.items()}
 
             # Extract subgraphs based on the mappings
-            mcs_S = S.subgraph(mcs.keys())
-            mcs_P = P.subgraph(mcs.values())
+            # mcs_S = S.subgraph(mcs.keys())
+            # mcs_P = P.subgraph(mcs.values())
+            mcs_S = _subgraph(S, mcs.keys())
+            mcs_P = _subgraph(P, mcs.values())
 
             # Compute embeddings of mcs_S and mcs_P
             E1 = emb(mcs_S, S)  # Embedding of mcs_S in S
@@ -501,7 +516,9 @@ def grow_supergraph_iter(
             S_init_to_S = {node_S_init: new_mono[node_S] for node_S_init, node_S in S_init_to_S.items()}
             S = new_S
             num_nodes_S = len(S) - 1  # Excluding the leaf node
-            generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
+            # generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
+            S_sub = _subgraph(S, set(S.nodes()) - {leaf_S})
+            generations_S = list(nx.topological_generations(S_sub))
 
             # Reset search state
             i_partition, next_front = state_history[0]["i_partition"], state_history[0]["next_front"]
@@ -538,6 +555,7 @@ def grow_supergraph(
     sort_fn: Callable = None,
     progress_bar: bool = True,
     validate: bool = False,
+    progress_fn: Callable = None
 ):
     S_init_size = len(S)
     Gs = [Gs] if isinstance(Gs, nx.DiGraph) else Gs
@@ -547,9 +565,10 @@ def grow_supergraph(
     num_nodes = sum([len(G) for G in Gs])
 
     # Chain the iterators together
-    pbar = tqdm.tqdm(total=num_partitions, desc="Growing supergraph")
+    pbar = tqdm.tqdm(total=num_partitions, desc="Growing supergraph", disable=not progress_bar)
 
     # Main loop to grow the supergraph
+    t_elapsed = 0.
     # S_history = [(0, S)]
     Gs_monomorphism = []
     Gs_S_init_to_S = []
@@ -559,7 +578,11 @@ def grow_supergraph(
     for i_G, G in enumerate(Gs):
         grow_iter = grow_supergraph_iter(G, S, leaf_kind, combination_mode, backtrack, sort_fn)
         G_S_init_to_S = {n: n for n in S}
+        t_start = time.perf_counter()
         for i_partition, _G_unmatched, S, _G_monomorphism, _monomorphism, _G_S_init_to_S in grow_iter:
+            # Get time elapsed
+            t_end = time.perf_counter()
+            t_elapsed += t_end - t_start
             # if len(S) > len(S_history[-1][1]):
             #     S_history.append((i_G, S))
             #     if False:
@@ -572,7 +595,10 @@ def grow_supergraph(
             #         plt.show()
             G_S_init_to_S = _G_S_init_to_S
             G_monomorphism = _G_monomorphism
+            if progress_fn:
+                progress_fn(t_elapsed, Gs_num_partitions, Gs_matched, i_partition, G_monomorphism, G, S)
             if progress_bar:
+
                 size = len(S)
                 supergraph_nodes = size * (i_partition + 1 + sum(Gs_num_partitions))
                 matched_nodes = len(G_monomorphism) + sum(Gs_matched)
@@ -581,6 +607,7 @@ def grow_supergraph(
                     f"{i_G+1}/{num_Gs} graphs, {matched_nodes}/{num_nodes} matched ({efficiency:.2%} efficiency, {size} nodes)"
                 )
                 pbar.update(1)
+            t_start = time.perf_counter()
 
         # Save monomorphism
         Gs_num_partitions.append(i_partition + 1)
@@ -598,9 +625,7 @@ def grow_supergraph(
     Gs_S_to_S_final = list(reversed(Gs_S_to_S_final))
 
     # Check that size of Gs_S_to_S_final is monotonically increasing
-    assert all(
-        [len(Gs_S_to_S_final[i]) <= len(Gs_S_to_S_final[i + 1]) for i in range(0, len(Gs_S_to_S_final) - 1)]
-    ), "Size of Gs_S_to_S_final is not monotonically increasing"
+    assert all([len(Gs_S_to_S_final[i]) <= len(Gs_S_to_S_final[i + 1]) for i in range(0, len(Gs_S_to_S_final) - 1)]), "Size of Gs_S_to_S_final is not monotonically increasing"
     assert len(S_init_to_S_final) == S_init_size, "Size of S_init_to_S_final is not equal to size of S_init"
 
     # Map monomorphism to final S
@@ -617,7 +642,8 @@ def grow_supergraph(
                     partitions[i] = {}
                 partitions[i][n] = v
             for _i, partition in partitions.items():
-                P = Gs[i_G].subgraph(partition.keys())
+                # P = Gs[i_G].subgraph(partition.keys())
+                P = _subgraph(Gs[i_G], partition.keys())
                 is_mono = check_order(S, P, partition)
                 assert is_mono, "Remapped monomorphism is not a valid with respect to the order of the supergraph"
                 # if not is_mono:
