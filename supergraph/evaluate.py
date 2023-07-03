@@ -267,7 +267,8 @@ def create_graph(
         partial(ornstein_uhlenbeck_samples, rng=rng, theta=theta, mu=1 / f, sigma=sigma / f, dt=1 / f, x0=1 / f) for f in fs
     ]
     dt = [
-        np.stack((np.linspace(1 / f, T, ceil(T * f)), np.clip(fn(n=ceil(T * f)), 1 / f, np.inf)), dtype="float32") for f, fn in zip(fs, fn_dt)
+        np.stack((np.linspace(1 / f, T, ceil(T * f)), np.clip(fn(n=ceil(T * f)), 1 / f, np.inf)), dtype="float32")
+        for f, fn in zip(fs, fn_dt)
     ]
     ts = [np.stack((_dt[0], np.cumsum(_dt[1])), dtype="float32") for _dt in dt]
     ts = [np.concatenate((np.array([[0.0], [0.0]]), _ts), axis=1, dtype="float32") for _ts in ts]

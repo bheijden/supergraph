@@ -555,7 +555,7 @@ def grow_supergraph(
     sort_fn: Callable = None,
     progress_bar: bool = True,
     validate: bool = False,
-    progress_fn: Callable = None
+    progress_fn: Callable = None,
 ):
     S_init_size = len(S)
     Gs = [Gs] if isinstance(Gs, nx.DiGraph) else Gs
@@ -568,7 +568,7 @@ def grow_supergraph(
     pbar = tqdm.tqdm(total=num_partitions, desc="Growing supergraph", disable=not progress_bar)
 
     # Main loop to grow the supergraph
-    t_elapsed = 0.
+    t_elapsed = 0.0
     # S_history = [(0, S)]
     Gs_monomorphism = []
     Gs_S_init_to_S = []
@@ -625,7 +625,9 @@ def grow_supergraph(
     Gs_S_to_S_final = list(reversed(Gs_S_to_S_final))
 
     # Check that size of Gs_S_to_S_final is monotonically increasing
-    assert all([len(Gs_S_to_S_final[i]) <= len(Gs_S_to_S_final[i + 1]) for i in range(0, len(Gs_S_to_S_final) - 1)]), "Size of Gs_S_to_S_final is not monotonically increasing"
+    assert all(
+        [len(Gs_S_to_S_final[i]) <= len(Gs_S_to_S_final[i + 1]) for i in range(0, len(Gs_S_to_S_final) - 1)]
+    ), "Size of Gs_S_to_S_final is not monotonically increasing"
     assert len(S_init_to_S_final) == S_init_size, "Size of S_init_to_S_final is not equal to size of S_init"
 
     # Map monomorphism to final S
