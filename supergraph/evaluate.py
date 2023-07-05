@@ -414,7 +414,7 @@ def baselines_S(Gs: Union[nx.DiGraph, List[nx.DiGraph]], leaf_kind, toposorts: L
             toposorts.append(list(nx.topological_sort(G)))
 
     # Get kinds
-    attribute_set = {"kind", "order", "edgecolor", "facecolor", "position", "alpha"}
+    attribute_set = {"inputs", "kind", "order", "edgecolor", "facecolor", "position", "alpha"}
     kinds = {Gs[0].nodes[n]["kind"]: data for n, data in Gs[0].nodes(data=True)}
     kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
 

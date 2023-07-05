@@ -13,7 +13,7 @@ def _is_node_attr_match(motif_node_id: str, host_node_id: str, motif: nx.DiGraph
 
 
 def as_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, sort_fn: Callable = None):
-    attribute_set = {"kind", "order", "edgecolor", "facecolor", "position", "alpha"}
+    attribute_set = {"kind", "inputs", "order", "edgecolor", "facecolor", "position", "alpha"}
     kinds = {P.nodes[n]["kind"]: data for n, data in P.nodes(data=True)}
     kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
     edge_attribute_set = {"color", "linestyle", "alpha"}

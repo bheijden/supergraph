@@ -19,25 +19,26 @@ WINDOW = [0]
 LEAF_KIND = [0]
 EPISODES = [20]
 LENGTH = [100]
-NUM_NODES = [2, 4, 8, 16, 32, 64]
+NUM_NODES = [2, 4, 8, 16, 32]
 SIGMA = [0, 0.1, 0.2, 0.3]
 THETA = [0.07]
 SEED = [0, 1, 2, 3, 4]
 
 # Algorithm inputs
-SUPERGRAPH_TYPE = ["mcs", "topological", "generational", "sequential"]
-COMBINATION_MODE = ["linear"]
-SORT_MODE = ["arbitrary", "optimal"]
+SUPERGRAPH_TYPE = ["mcs"]#, "topological", "generational", "sequential"]
+COMBINATION_MODE = ["power"]
+SORT_MODE = ["arbitrary"]#, "optimal"]
 BACKTRACK = [20]
 
 # Logging inputs
-MUST_LOG = False
-MULTIPROCESSING = False
+MUST_LOG = True
+MULTIPROCESSING = True
+WORKERS = 8
 os.environ["WANDB_SILENT"] = "true"
 DATA_DIR = "/home/r2ci/supergraph/data"
 PROJECT = "supergraph"
 SYNC_MODE = "offline"
-GROUP = f"test-evaluation-{datetime.datetime.today().strftime('%Y-%m-%d-%H%M')}"
+GROUP = f"combination-evaluation-{datetime.datetime.today().strftime('%Y-%m-%d-%H%M')}"
 
 
 def progress_fn(run, num_nodes, t_final, t_elapsed, Gs_num_partitions, Gs_matched, i_partition, G_monomorphism, G, S):
@@ -280,7 +281,7 @@ if __name__ == '__main__':
     assert all_exist, "Not all graphs exist"
 
     # Create a multiprocessing pool
-    pool = mp.Pool(1)
+    pool = mp.Pool(WORKERS)
 
     # Create a progress bar
     total = reduce(mul, [len(p) for p in all_graphs], 1)
