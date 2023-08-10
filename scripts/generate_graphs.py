@@ -24,19 +24,26 @@ DATA_DIR = "/home/r2ci/supergraph/data"
 
 
 # Define a function to generate all episodes for the given parameters
-def generate_episodes(seed, frequency_type, topology_type, theta, sigma, window, num_nodes, max_freq, episodes, length, leaf_kind):
+def generate_episodes(seed, frequency_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind):
     # todo: add communication graph plot to the table?
     # todo: store communication graph edges separately?
 
     # Create a unique temporary directory
     # temp_dir = tempfile.mkdtemp()  # Create a unique temporary directory
     # artifact_type = f"graph-{topology_type}"
-    name = supergraph.evaluate.to_graph_name(seed, frequency_type, topology_type, theta, sigma, window, num_nodes, max_freq, episodes, length, leaf_kind)
+    name = supergraph.evaluate.to_graph_name(seed, frequency_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind)
+
+    # If name already exists in DATA_DIR, skip this run
+    if os.path.exists(f"{DATA_DIR}/{name}"):
+        print(f"Skipping {name} as it already exists")
+        return
+
     metadata = {"seed": seed,
                 "frequency_type": frequency_type,
                 "topology_type": topology_type,
                 "theta": theta,
                 "sigma": sigma,
+                "scaling_mode": scaling_mode,
                 "window": window,
                 "num_nodes": num_nodes,
                 "max_freq": max_freq,
@@ -99,7 +106,7 @@ def generate_episodes(seed, frequency_type, topology_type, theta, sigma, window,
     seeds = rng_episode.integers(low=0, high=np.iinfo(np.int32).max, size=episodes)
     # Gs = []
     for eps, s in tqdm(enumerate(seeds), desc="Generating episodes", disable=True):
-        G = sg.evaluate.create_graph(fs, edges, length, seed=s, theta=theta, sigma=sigma, progress_bar=False, return_ts=False, with_attributes=False)
+        G = sg.evaluate.create_graph(fs, edges, length, seed=s, theta=theta, sigma=sigma, scaling_mode=scaling_mode, progress_bar=False, return_ts=False, with_attributes=False)
         G = sg.evaluate.prune_by_window(G, window)
         G = sg.evaluate.prune_by_leaf(G, leaf_kind)
         # Gs.append(G)
@@ -163,10 +170,11 @@ if __name__ == '__main__':
     NUM_NODES = [2, 4, 8, 16, 32, 64]
     SIGMA = [0, 0.1, 0.2, 0.3]
     THETA = [0.07]
+    SCALING_MODE = ["after_generation"]
     SEED = [0, 1, 2, 3, 4]
 
     # Generate combinations of all the parameters
-    all_params = [SEED, FREQUENCY_TYPE, TOPOLOGY_TYPE, THETA, SIGMA, WINDOW, NUM_NODES, MAX_FREQ, EPISODES, LENGTH, LEAF_KIND]
+    all_params = [SEED, FREQUENCY_TYPE, TOPOLOGY_TYPE, THETA, SIGMA, SCALING_MODE, WINDOW, NUM_NODES, MAX_FREQ, EPISODES, LENGTH, LEAF_KIND]
     param_combinations = product(*all_params)
 
     # Create a multiprocessing pool
@@ -179,9 +187,9 @@ if __name__ == '__main__':
 
     # Call the function for each combination of parameters using multiprocessing
     for params in param_combinations:
-        # tst = generate_episodes(*params)
-        # update()
-        pool.apply_async(generate_episodes, args=params, callback=update)
+        tst = generate_episodes(*params)
+        update()
+        # pool.apply_async(generate_episodes, args=params, callback=update)
 
     # Close and join the pool
     pool.close()

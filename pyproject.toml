@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "supergraph"
-version = "0.0.1"
+version = "0.0.3"
 license = "Apache2.0"
 description = "Supergraph compiler."
 authors = ["Bas van der Heijden <d.s.vanderheijden@tudelft.nl>"]
@@ -10,7 +10,7 @@ documentation = "https://github.com/bheijden/supergraph"
 
 [tool.poetry.dependencies]
 python = "^3.8"
-networkx = "^2.8.8"
+networkx = "^3.1.0"
 numpy = "^1.24.3"
 tqdm = "^4.65.0"
 
@@ -19,10 +19,17 @@ tqdm = "^4.65.0"
 # https://python-poetry.org/docs/pyproject/#extras
 # poetry install --all-extras or poetry install -E paper or poetry install --all-extras or poetry install --extras "paper"
 wandb = { version = "^0.15.4", optional = true }
+seaborn = { version = "^0.12.2", optional = true }
 matplotlib = { version = "^3.7.1", optional = true }
+#jupyterlab = { version = "^4.0.3", optional = true }
+#ipywidgets = { version = "^8.0.7", optional = true }
+jupyter = "^1.0.0"
+jupyterlab = "^4.0.3"
+ipywidgets = "^8.0.7"
 
 [tool.poetry.extras]
-paper = ["wandb", "matplotlib"]
+paper = ["wandb", "matplotlib", "seaborn"]
+#paper = ["wandb", "matplotlib", "jupyterlab", "ipywidgets"]
 
 [tool.poetry.dev-dependencies]
 black = "^22.1.0"

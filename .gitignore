@@ -133,4 +133,5 @@ dmypy.json
 
 # Custom
 data/
+data_old/
 wandb/

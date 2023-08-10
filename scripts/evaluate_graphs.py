@@ -19,35 +19,36 @@ WINDOW = [0]
 LEAF_KIND = [0]
 EPISODES = [20]
 LENGTH = [100]
-NUM_NODES = [2, 4, 8, 16, 32]
-SIGMA = [0, 0.1, 0.2, 0.3]
+NUM_NODES = [32]  # [2, 4, 8, 16, 32]  # , 64]
+SIGMA = [0.1]  # [0, 0.1, 0.2, 0.3]
 THETA = [0.07]
+SCALING_MODE = ["after_generation"]
 SEED = [0, 1, 2, 3, 4]
 
 # Algorithm inputs
-SUPERGRAPH_TYPE = ["mcs"]#, "topological", "generational", "sequential"]
-COMBINATION_MODE = ["power"]
+SUPERGRAPH_TYPE = ["mcs"]# , "topological", "generational", "sequential"]
+COMBINATION_MODE = ["linear"] #, power]
 SORT_MODE = ["arbitrary"]#, "optimal"]
-BACKTRACK = [20]
+BACKTRACK = [0, 10, 15, 20]
 
 # Logging inputs
-MUST_LOG = True
+MUST_LOG = False
 MULTIPROCESSING = True
-WORKERS = 8
+WORKERS = 6
 os.environ["WANDB_SILENT"] = "true"
 DATA_DIR = "/home/r2ci/supergraph/data"
 PROJECT = "supergraph"
 SYNC_MODE = "offline"
-GROUP = f"combination-evaluation-{datetime.datetime.today().strftime('%Y-%m-%d-%H%M')}"
+GROUP = f"backtrack-32-0.1-evaluation-{datetime.datetime.today().strftime('%Y-%m-%d-%H%M')}" # todo: adjust name
 
 
-def progress_fn(run, num_nodes, t_final, t_elapsed, Gs_num_partitions, Gs_matched, i_partition, G_monomorphism, G, S):
+def progress_fn(run, Gs_num_nodes, t_final, t_elapsed, Gs_num_partitions, Gs_matched, i_partition, G_monomorphism, G, S):
     supergraph_size = len(S)
     supergraph_nodes = supergraph_size * (i_partition + 1 + sum(Gs_num_partitions))
     matched_nodes = len(G_monomorphism) + sum(Gs_matched)
     efficiency_ratio = matched_nodes / supergraph_nodes
     efficiency_percentage = efficiency_ratio * 100
-    matched_ratio = matched_nodes / num_nodes
+    matched_ratio = matched_nodes / Gs_num_nodes
     matched_percentage = matched_ratio * 100
     t_final[0] = t_elapsed
     metrics = {"transient/supergraph_size": supergraph_size,
@@ -63,7 +64,7 @@ def progress_fn(run, num_nodes, t_final, t_elapsed, Gs_num_partitions, Gs_matche
         run.log(metrics)
 
 
-def log_final(num_nodes, S, Gs_monomorphism, t_elapsed):
+def log_final(Gs_num_nodes, S, Gs_monomorphism, t_elapsed):
     Gs_num_partitions = []
 
     for G_mono in Gs_monomorphism:
@@ -77,7 +78,7 @@ def log_final(num_nodes, S, Gs_monomorphism, t_elapsed):
     matched_nodes = sum([len(G_mono) for G_mono in Gs_monomorphism])
     efficiency_ratio = matched_nodes / supergraph_nodes
     efficiency_percentage = efficiency_ratio * 100
-    matched_ratio = matched_nodes / num_nodes
+    matched_ratio = matched_nodes / Gs_num_nodes
     matched_percentage = matched_ratio * 100
     metrics = {"final/supergraph_size": supergraph_size,
                "final/supergraph_nodes": supergraph_nodes,
@@ -86,7 +87,7 @@ def log_final(num_nodes, S, Gs_monomorphism, t_elapsed):
                "final/efficiency_percentage": efficiency_percentage,
                "final/matched_ratio": matched_ratio,
                "final/matched_percentage": matched_percentage,
-               "final/complete_match": matched_nodes == num_nodes,
+               "final/complete_match": matched_nodes == Gs_num_nodes,
                }
     if t_elapsed is not None:
         metrics["final/t_elapsed"] = t_elapsed
@@ -94,10 +95,10 @@ def log_final(num_nodes, S, Gs_monomorphism, t_elapsed):
 
 
 # Define a function to generate all episodes for the given parameters
-def evaluate_graph(seed, frequency_type, topology_type, theta, sigma, window, num_nodes, max_freq, episodes, length, leaf_kind):
+def evaluate_graph(seed, frequency_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind):
 
     # Create a unique temporary directory
-    name = supergraph.evaluate.to_graph_name(seed, frequency_type, topology_type, theta, sigma, window, num_nodes, max_freq, episodes, length, leaf_kind)
+    name = supergraph.evaluate.to_graph_name(seed, frequency_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind)
     RUN_DIR = f"{DATA_DIR}/{name}"
 
     # Load metadata from file and verify that it matches the params_graph
@@ -106,6 +107,7 @@ def evaluate_graph(seed, frequency_type, topology_type, theta, sigma, window, nu
                 "topology_type": topology_type,
                 "theta": theta,
                 "sigma": sigma,
+                "scaling_mode": scaling_mode,
                 "window": window,
                 "num_nodes": num_nodes,
                 "max_freq": max_freq,
@@ -125,7 +127,7 @@ def evaluate_graph(seed, frequency_type, topology_type, theta, sigma, window, nu
         G_ts = None # np.load(f"{EPS_DIR}/G_ts.npy")
         G = supergraph.evaluate.from_numpy(G_edges, G_ts)
         Gs.append(G)
-    num_nodes = sum([G.number_of_nodes() for G in Gs])
+    Gs_num_nodes = sum([G.number_of_nodes() for G in Gs])
 
     # Run evaluation for each supergraph type. Logged as separate runs to wandb.
     for supergraph_type in SUPERGRAPH_TYPE:
@@ -162,9 +164,9 @@ def evaluate_graph(seed, frequency_type, topology_type, theta, sigma, window, nu
                                      mode=SYNC_MODE,
                                      group=GROUP,
                                      config=config)
-                    mcs_progress_fn = partial(progress_fn, run, num_nodes, t_final)
+                    mcs_progress_fn = partial(progress_fn, run, Gs_num_nodes, t_final)
                 else:
-                    mcs_progress_fn = partial(progress_fn, None, num_nodes, t_final)
+                    mcs_progress_fn = partial(progress_fn, None, Gs_num_nodes, t_final)
                     run = None
 
                 # Define initial supergraph
@@ -180,7 +182,7 @@ def evaluate_graph(seed, frequency_type, topology_type, theta, sigma, window, nu
                                                                 validate=False)
 
                 # Get metrics
-                metrics = log_final(num_nodes, S_sup, m_sup, t_final[0])
+                metrics = log_final(Gs_num_nodes, S_sup, m_sup, t_final[0])
 
                 # Finish wandb run
                 if MUST_LOG:
@@ -196,7 +198,7 @@ def evaluate_graph(seed, frequency_type, topology_type, theta, sigma, window, nu
             m_top = sg.evaluate_supergraph(Gs, S_top, progress_bar=False, name="S_top")
 
             # Get metrics
-            metrics = log_final(num_nodes, S_top, m_top, None)
+            metrics = log_final(Gs_num_nodes, S_top, m_top, None)
 
             # Log wandb run
             if MUST_LOG:
@@ -221,7 +223,7 @@ def evaluate_graph(seed, frequency_type, topology_type, theta, sigma, window, nu
             m_gen = sg.evaluate_supergraph(Gs, S_gen, progress_bar=False, name="S_gen")
 
             # Get metrics
-            metrics = log_final(num_nodes, S_gen, m_gen, None)
+            metrics = log_final(Gs_num_nodes, S_gen, m_gen, None)
 
             # Log wandb run
             if MUST_LOG:
@@ -246,7 +248,7 @@ def evaluate_graph(seed, frequency_type, topology_type, theta, sigma, window, nu
             m_seq = sg.evaluate_supergraph(Gs, S_seq, progress_bar=False, name="S_seq")
 
             # Get metrics
-            metrics = log_final(num_nodes, S_seq, m_seq, None)
+            metrics = log_final(Gs_num_nodes, S_seq, m_seq, None)
 
             # Log wandb run
             if MUST_LOG:
@@ -269,12 +271,12 @@ if __name__ == '__main__':
         wandb.setup()
 
     # Generate combinations of all the necessary graphs
-    all_graphs = [SEED, FREQUENCY_TYPE, TOPOLOGY_TYPE, THETA, SIGMA, WINDOW, NUM_NODES, MAX_FREQ, EPISODES, LENGTH, LEAF_KIND]
+    all_graphs = [SEED, FREQUENCY_TYPE, TOPOLOGY_TYPE, THETA, SIGMA, SCALING_MODE, WINDOW, NUM_NODES, MAX_FREQ, EPISODES, LENGTH, LEAF_KIND]
     graph_combinations = list(product(*all_graphs))
     all_exist = True
     for params in graph_combinations:  # Verify that all graphs are generated in DATA_DIR
-        seed, freq_type, topology_type, theta, sigma, window, num_nodes, max_freq, episodes, length, leaf_kind = params
-        name = supergraph.evaluate.to_graph_name(seed, freq_type, topology_type, theta, sigma, window, num_nodes, max_freq, episodes, length, leaf_kind)
+        seed, freq_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind = params
+        name = supergraph.evaluate.to_graph_name(seed, freq_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind)
         if not os.path.exists(f"{DATA_DIR}/{name}"):
             print(f"Missing graph: {name}")
             all_exist = False

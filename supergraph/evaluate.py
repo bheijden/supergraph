@@ -2,7 +2,7 @@ from tqdm import tqdm
 import itertools
 from functools import partial
 from typing import List, Set, Tuple, Union
-
+from collections import deque
 import numpy as np
 from math import floor, ceil
 
@@ -237,6 +237,7 @@ def create_graph(
     seed: int = 0,
     theta: float = 0.07,
     sigma: float = 0.1,
+    scaling_mode: str = "after_generation",
     progress_bar: bool = False,
     return_ts: bool = False,
     with_attributes: bool = True,
@@ -263,9 +264,34 @@ def create_graph(
 
     # Function body
     rng = np.random.default_rng(seed=seed)
-    fn_dt = [
-        partial(ornstein_uhlenbeck_samples, rng=rng, theta=theta, mu=1 / f, sigma=sigma / f, dt=1 / f, x0=1 / f) for f in fs
-    ]
+    # Old scaling
+    if scaling_mode == "old":
+        fn_dt = [
+            partial(ornstein_uhlenbeck_samples, rng=rng, theta=theta, mu=1 / f, sigma=sigma / f, dt=1 / f, x0=1 / f) for f in fs
+        ]
+    elif scaling_mode == "after_generation":
+        # Scaling samples after generation
+        fn_dt = [
+            (lambda n, f=f: (1 + ornstein_uhlenbeck_samples(rng=rng, theta=theta, mu=0, sigma=sigma, dt=1, x0=0, n=n))/f) for f in fs
+        ]
+    else:
+        raise ValueError(f"Unknown scaling mode {scaling_mode}")
+    # Scaling theta and sigma with dt
+    # def scale_theta_sigma(f, n):
+    #     dt = 1/f
+    #     th_scaled = theta * dt
+    #     sig_scaled = sigma * (th_scaled/theta)
+    #     X = ornstein_uhlenbeck_samples(rng=rng, theta=th_scaled, mu=1 / f, sigma=sig_scaled, dt=1 / f, x0=1 / f, n=n)
+    #     return X
+
+    # fn_dt = [partial(scale_theta_sigma, f) for f in fs]
+
+    # # Generate samples
+    # for f, fn in zip(fs, fn_dt):
+    #     X = fn(n=1000000)
+    #     # Print statistics and scaled statistics
+    #     print(f"{f} | Mean: {np.mean(X)}, Std: {np.std(X)} | scaled(Mean): {np.mean(X)*f}, scaled(Std): {np.std(X)*f}")
+
     dt = [
         np.stack((np.linspace(1 / f, T, ceil(T * f)), np.clip(fn(n=ceil(T * f)), 1 / f, np.inf)), dtype="float32")
         for f, fn in zip(fs, fn_dt)
@@ -596,6 +622,94 @@ def from_numpy(edges: np.ndarray, ts: np.ndarray = None) -> nx.DiGraph:
     return G
 
 
-def to_graph_name(seed, frequency_type, topology_type, theta, sigma, window, num_nodes, max_freq, episodes, length, leaf_kind):
-    name = f"graph-{topology_type}-{frequency_type}-{theta}-{sigma}-{window}-{num_nodes}-{max_freq}-{episodes}-{length}-{leaf_kind}-{seed}"
+def to_graph_name(seed, frequency_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind):
+    name = f"graph-{topology_type}-{frequency_type}-{theta}-{sigma}-{scaling_mode}-{window}-{num_nodes}-{max_freq}-{episodes}-{length}-{leaf_kind}-{seed}"
     return name
+
+
+def to_rex_supergraph(S: nx.DiGraph, edges: Set[Tuple[int, int]] = None, window: int = 1) -> nx.DiGraph:
+    assert window > 0, "Window must be an integer greater than 0"
+    if edges is None:
+        raise NotImplementedError("Not yet implemented")
+
+    # Prepare node data
+    node_data = {}
+    for (u, v) in edges:
+        if u == v:
+            continue
+        if u in node_data:
+            udata = node_data[u]
+        else:
+            udata = {"kind": u, "inputs": {}, "stateful": True}
+            node_data[u] = udata
+        if v in node_data:
+            vdata = node_data[v]
+        else:
+            vdata = {"kind": v, "inputs": {}, "stateful": True}
+            node_data[v] = vdata
+        vdata["inputs"][u] = {"input_name": u, "window": window}
+
+    topo_sort = list(nx.topological_sort(S))
+    for v in topo_sort:
+        vdata = S.nodes[v]
+        vdata.update(node_data[vdata["kind"]])
+        vdata.update({"pruned": False, "super": True})
+    return S
+
+
+def to_rex(G: nx.DiGraph, edges: Set[Tuple[int, int]] = None, window: int = 1) -> nx.DiGraph:
+    assert window > 0, "Window must be an integer greater than 0"
+    if edges is None:
+        raise NotImplementedError("Not yet implemented")
+
+    # Prepare node data
+    windowed = {}
+    node_data = {}
+    for (u, v) in edges:
+        if u == v:
+            continue
+        windowed[(u, v)] = deque(window*[(-1, 0.0)], maxlen=window)
+        if u in node_data:
+            udata = node_data[u]
+        else:
+            udata = {"kind": u, "inputs": {}, "stateful": True}
+            node_data[u] = udata
+        if v in node_data:
+            vdata = node_data[v]
+        else:
+            vdata = {"kind": v, "inputs": {}, "stateful": True}
+            node_data[v] = vdata
+        vdata["inputs"][u] = {"input_name": u, "window": window}
+
+    topo_sort = list(nx.topological_sort(G))
+    for v in topo_sort:
+        vdata = G.nodes[v]
+        vdata.update(node_data[vdata["kind"]])
+        vdata.update({"pruned": False, "super": False, "ts_step": vdata["ts"]})
+        # Disconnect input edges
+        edges_to_remove = []
+        for u, _, edata in G.in_edges(v, data=True):
+            udata = G.nodes[u]
+            if udata["kind"] == vdata["kind"]:
+                # todo: may need to add window, kind to edge data
+                edata.update({"stateful": True, "pruned": False})
+                continue
+            edges_to_remove.append((u, v))
+            windowed[(udata["kind"], vdata["kind"])].append((udata["seq"], udata["ts"]))
+        G.remove_edges_from(edges_to_remove)
+
+        # Reconnect inputs edges based on window
+        for (u, _) in vdata["inputs"].items():
+            if (u, vdata["kind"]) in windowed:
+                for seq, ts in windowed[(u, vdata["kind"])]:
+                    if seq == -1:
+                        continue
+                    # todo: may need to add window, kind to edge data
+                    G.add_edge(f"{u}_{seq}", v, ts_sent=ts, ts_recv=ts, seq=seq, stateful=False, pruned=False)
+
+    return G
+
+    # Add edges to reflect
+    # prune to window=x
+    # add inputs={kind_name: {input_name: kind_name, window: 1}} to node_data
+    # add stateful and pruned to edge_data

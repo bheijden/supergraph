@@ -82,7 +82,7 @@ if __name__ == "__main__":
     edges.update({(i, i) for i in range(NUM_NODES)})  # Stateful edges
 
     # Create graph
-    G = supergraph.evaluate.create_graph(fs, edges, T, seed=SEED, theta=THETA, sigma=SIGMA)
+    G = supergraph.evaluate.create_graph(fs, edges, T, seed=SEED, theta=THETA, sigma=SIGMA, scaling_mode="after_generation")
     G = supergraph.evaluate.prune_by_window(G, WINDOW)
 
     # Get initial supergraph

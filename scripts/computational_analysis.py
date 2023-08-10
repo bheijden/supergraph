@@ -11,9 +11,9 @@ if __name__ == '__main__':
 	MUST_PLOT = False
 	SEED = 11  # 22
 	THETA = 0.07
-	SIGMA = 0.0
+	SIGMA = 0.3
 	WINDOW = 0
-	NUM_NODES = 4  # 10
+	NUM_NODES = 32  # 10
 	MAX_FREQ = 200
 	COMBINATION_MODE = "linear"
 	EPISODES = 2

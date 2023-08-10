@@ -1,4 +1,4 @@
-__version__ = "0.0.1"
+__version__ = "0.0.3"
 
 import itertools
 import tqdm
@@ -340,7 +340,7 @@ def grow_supergraph_iter(
         # Determine nodes in G that are ancestors of current leaf node (i.e. that must be matched before leaf node)
         ancestors = nx.ancestors(G_unmatched, leaf_k)
 
-        # Determine matched nodes in ancestors
+        # Determine matched nodes in ancestorsSimplifications/approximations made in the algorithm
         matched_nodes = ancestors.intersection(monomorphism.keys())
         if len(matched_nodes) == len(ancestors):  # Perfect match
             # All ancestors are matched, so we can proceed to next leaf node
