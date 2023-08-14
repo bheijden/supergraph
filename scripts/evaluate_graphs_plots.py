@@ -44,12 +44,14 @@ if __name__ == "__main__":
     halfwidth_figsize = [c*s for c, s in zip([0.5, 0.6], rescaled_figsize)]
     fullwidth_figsize = [c*s for c, s in zip([1, 0.6], rescaled_figsize)]
     thirdwidth_figsize = [c * s for c, s in zip([1 / 3, 0.6], rescaled_figsize)]
+    twothirdwidth_figsize = [c*s for c, s in zip([2/3, 0.6], rescaled_figsize)]
     print("Default figsize:", default_figsize)
     print("Rescaled figsize:", rescaled_figsize)
     print("Half figsize:", half_figsize)
     print("Fullwidth figsize:", fullwidth_figsize)
     print("Halfwidth figsize:", halfwidth_figsize)
     print("Thirdwidth figsize:", thirdwidth_figsize)
+    print("thirdwidth figsize:", twothirdwidth_figsize)
     labels = {
         # Supergraph type
         "mcs": "mcs",

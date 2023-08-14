@@ -267,12 +267,14 @@ def create_graph(
     # Old scaling
     if scaling_mode == "old":
         fn_dt = [
-            partial(ornstein_uhlenbeck_samples, rng=rng, theta=theta, mu=1 / f, sigma=sigma / f, dt=1 / f, x0=1 / f) for f in fs
+            partial(ornstein_uhlenbeck_samples, rng=rng, theta=theta, mu=1 / f, sigma=sigma / f, dt=1 / f, x0=1 / f)
+            for f in fs
         ]
     elif scaling_mode == "after_generation":
         # Scaling samples after generation
         fn_dt = [
-            (lambda n, f=f: (1 + ornstein_uhlenbeck_samples(rng=rng, theta=theta, mu=0, sigma=sigma, dt=1, x0=0, n=n))/f) for f in fs
+            (lambda n, f=f: (1 + ornstein_uhlenbeck_samples(rng=rng, theta=theta, mu=0, sigma=sigma, dt=1, x0=0, n=n)) / f)
+            for f in fs
         ]
     else:
         raise ValueError(f"Unknown scaling mode {scaling_mode}")
@@ -622,7 +624,9 @@ def from_numpy(edges: np.ndarray, ts: np.ndarray = None) -> nx.DiGraph:
     return G
 
 
-def to_graph_name(seed, frequency_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind):
+def to_graph_name(
+    seed, frequency_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind
+):
     name = f"graph-{topology_type}-{frequency_type}-{theta}-{sigma}-{scaling_mode}-{window}-{num_nodes}-{max_freq}-{episodes}-{length}-{leaf_kind}-{seed}"
     return name
 
@@ -668,7 +672,7 @@ def to_rex(G: nx.DiGraph, edges: Set[Tuple[int, int]] = None, window: int = 1) -
     for (u, v) in edges:
         if u == v:
             continue
-        windowed[(u, v)] = deque(window*[(-1, 0.0)], maxlen=window)
+        windowed[(u, v)] = deque(window * [(-1, 0.0)], maxlen=window)
         if u in node_data:
             udata = node_data[u]
         else:
