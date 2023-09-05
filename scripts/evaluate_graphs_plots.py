@@ -20,38 +20,38 @@ if __name__ == "__main__":
         # if "font.size" not in key:
             # continue
         # print(key, value)
+    scaling = 5
+    MUST_BREAK = False
     plt.rcParams['axes.labelweight'] = 'bold'
-    plt.rcParams['axes.labelsize'] = 10
-    plt.rcParams['legend.fontsize'] = 9
-    plt.rcParams['font.size'] = 12
-    plt.rcParams['xtick.labelsize'] = 8
-    plt.rcParams['ytick.labelsize'] = 8
-    plt.rcParams['xtick.major.pad'] = -2.0
-    plt.rcParams['ytick.major.pad'] = -2.0
-    plt.rcParams['lines.linewidth'] = 1.3
+    plt.rcParams['axes.labelsize'] = 5 * scaling
+    plt.rcParams['legend.fontsize'] = 4 * scaling
+    plt.rcParams['font.size'] = 6 * scaling
+    plt.rcParams['xtick.labelsize'] = 4 * scaling
+    plt.rcParams['ytick.labelsize'] = 4 * scaling
+    plt.rcParams['xtick.major.pad'] = -0.0 * scaling
+    plt.rcParams['ytick.major.pad'] = -0.0 * scaling
+    plt.rcParams['lines.linewidth'] = 0.65 * scaling
+    plt.rcParams['lines.markersize'] = 4.0 * scaling
     plt.rcParams['axes.xmargin'] = 0.0
+    plt.rcParams['axes.ymargin'] = 0.0
     plt.rcParams['pdf.fonttype'] = 42
     plt.rcParams['ps.fonttype'] = 42
 
     # Rescale figures
-    width_points = 245.71811*2
+    width_points = 245.71811 * scaling
     width_inches = width_points / plt.rcParams['figure.dpi']
     default_figsize = plt.rcParams['figure.figsize']
     rescaled_width = width_inches
     rescaled_height = width_inches * default_figsize[1] / default_figsize[0]
     rescaled_figsize = [rescaled_width, rescaled_height]
-    half_figsize = [0.5*s for s in rescaled_figsize]
-    halfwidth_figsize = [c*s for c, s in zip([0.5, 0.6], rescaled_figsize)]
-    fullwidth_figsize = [c*s for c, s in zip([1, 0.6], rescaled_figsize)]
-    thirdwidth_figsize = [c * s for c, s in zip([1 / 3, 0.6], rescaled_figsize)]
-    twothirdwidth_figsize = [c*s for c, s in zip([2/3, 0.6], rescaled_figsize)]
+    fullwidth_figsize = [c*s for c, s in zip([1, 0.52], rescaled_figsize)]
+    thirdwidth_figsize = [c * s for c, s in zip([1 / 3, 0.5], rescaled_figsize)]
+    sixthwidth_figsize = [c * s for c, s in zip([1 / 6, 0.5], rescaled_figsize)]
     print("Default figsize:", default_figsize)
     print("Rescaled figsize:", rescaled_figsize)
-    print("Half figsize:", half_figsize)
     print("Fullwidth figsize:", fullwidth_figsize)
-    print("Halfwidth figsize:", halfwidth_figsize)
     print("Thirdwidth figsize:", thirdwidth_figsize)
-    print("thirdwidth figsize:", twothirdwidth_figsize)
+    print("Sixthwidth figsize:", sixthwidth_figsize)
     labels = {
         # Supergraph type
         "mcs": "mcs",
@@ -73,6 +73,9 @@ if __name__ == "__main__":
         10: "10",
         15: "15",
         20: "20",
+        # Pendulum
+        "async": "mcs",
+        "deterministic": "seq",
     }
     cscheme = {
         # Supergraph type
@@ -100,12 +103,189 @@ if __name__ == "__main__":
         0.1: "pink",
         0.2: "grape",
         0.3: "violet",
+        # Pendulum
+        "async": "indigo",
+        "deterministic": "red",
+        # Environment
+        "real": "indigo",
+        "sim": "red",
         }
     cscheme.update({labels[k]: v for k, v in cscheme.items() if k in labels.keys()})
     ecolor, fcolor = oc.cscheme_fn(cscheme)
 
     import wandb
     api = wandb.Api()
+
+    # Pendulum plots
+    filters = {
+        "group": {"$in": ["train-real-evaluate-2023-08-16-1520"]},
+        "config.seed": {"$in": [0, 1, 2, 3, 4]},
+        # "JobType": {"$in": ["deterministic", "async"]},
+        "State": "finished",
+    }
+
+    # Generate a unique identifier from the filters
+    filter_str = json.dumps(filters, sort_keys=True)  # Convert dict to string in a consistent manner
+    hash_object = hashlib.md5(filter_str.encode())  # Use MD5 or another hashing algorithm
+    filter_hash = hash_object.hexdigest()  # Get the hash as a string
+
+    # Use the hash as the filename
+    filename = "df_" + filter_hash + ".pkl"
+
+    if all([os.path.exists(filename.replace("df_", f"df_{f}_")) for f in ["speed", "train", "eval"]]):
+        # If the file already exists, simply load the dataframe from it
+        print("Loading dataframe [pendulum] from file:", filename)
+        df_speed = pd.read_pickle(filename.replace("df_", f"df_speed_"))
+        df_train = pd.read_pickle(filename.replace("df_", f"df_train_"))
+        df_eval = pd.read_pickle(filename.replace("df_", f"df_eval_"))
+    else:
+        # If the file doesn't exist, generate the dataframe as usual
+        runs = api.runs(path="supergraph", filters=filters, per_page=1000)
+
+        df_list_train = []
+        df_list_eval = []
+        df_list_speed = []
+        for r in tqdm.tqdm(runs, desc="Loading data [pendulum]"):
+            # Train curve
+            h = r.history(samples=10000, keys=["train/ep_rew_mean", "train/total_timesteps"], x_axis="_step", pandas=True, stream="default")
+            new_columns = {"job_type": r.job_type, "seed": r.config["seed"]}
+            h = h.assign(**new_columns)
+            df_list_train.append(h)
+
+            # Speed curve
+            h1 = r.history(samples=10000, keys=["speed/supergraph_type", "speed/fps"], x_axis="_step", pandas=True, stream="default")
+            h2 = r.history(samples=10000, keys=["supergraph/supergraph_type", "supergraph/efficiency_percentage"], x_axis="_step", pandas=True, stream="default")
+
+            # join h1 and h2 on "speed/supergraph_type" and "supergraph/supergraph_type"
+            h = h1.merge(h2, left_on="speed/supergraph_type", right_on="supergraph/supergraph_type", suffixes=("_speed", "_supergraph"))
+            h.drop(columns=["supergraph/supergraph_type"], inplace=True)
+
+            new_columns = {"job_type": r.job_type, "seed": r.config["seed"]}
+            h = h.assign(**new_columns)
+            df_list_speed.append(h)
+
+            # Eval curve
+            new_columns = {"job_type": r.job_type, "seed": r.config["seed"], "ep_rew_mean_real": r.summary["final/real/ep_rew_mean"], "ep_rew_mean_sim": r.summary["speed/ep_rew_mean"]}
+            # Create a dataframe from new_columns
+            h = pd.DataFrame(new_columns, index=[0])
+            df_list_eval.append(h)
+        df_speed = pd.concat(df_list_speed)
+        df_train = pd.concat(df_list_train)
+        df_eval = pd.concat(df_list_eval)
+
+        # Save the dataframe to a file for future use
+        df_speed.to_pickle(filename.replace("df_", "df_speed_"))
+        df_train.to_pickle(filename.replace("df_", "df_train_"))
+        df_eval.to_pickle(filename.replace("df_", "df_eval_"))
+
+    # Pendulum plots
+    plots_pendulum = {"speed": None, "train": None, "eval": None}
+
+    # Speed plot
+    d = df_speed.copy()
+    d["supergraph_type"] = d["speed/supergraph_type"].map(labels)
+    d = d[d["job_type"] != "deterministic"]
+    d["job_type"] = d["job_type"].map(labels)
+
+    # remove speed/supergraph_type column
+    d = d.drop(columns=["speed/supergraph_type"])
+
+    # Group by relevant columns and compute the mean
+    d = d.groupby(["supergraph_type", "seed", "job_type"]).agg({
+        "speed/fps": 'mean',
+        "supergraph/efficiency_percentage": 'mean'
+    }).reset_index()
+
+    # Plot
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
+    plots_pendulum["speed"] = (fig, ax)
+    sns.scatterplot(x="supergraph/efficiency_percentage", y="speed/fps", hue="supergraph_type", palette=fcolor, ax=ax, data=d, legend=True)
+
+    # Fit a linear regression model using NumPy
+    X = d["supergraph/efficiency_percentage"].values
+    y = d["speed/fps"].values
+    coefficients = np.polyfit(X, y, 1)
+    Xh = np.linspace(0, 100, 100)  # X
+    y_line = coefficients[0] * Xh + coefficients[1]
+
+    # Plot the linear line
+    ax.plot(Xh, y_line, label='lin', color='black', linestyle='--', linewidth=plt.rcParams['lines.linewidth']*0.8)
+
+    # Set legend & axis labels
+    ax.set_ylim(1e6, 4e6)
+    ax.set_yticks([1e6, 2e6, 3e6, 4e6])
+    ax.set_xlim(0, 100)
+    ax.set_xlabel('efficiency (%)')
+    ax.set_ylabel("speed (fps)")
+    # Place the legend on the right outside of the figure
+    ax.legend(handles=ax.get_legend_handles_labels()[0], labels=ax.get_legend_handles_labels()[1],
+              # ncol=1, loc='best', bbox_to_anchor=(1, 1), fancybox=True, shadow=True)
+              ncol=1, loc='lower right', fancybox=True, shadow=True)
+
+    # Eval plot
+    d = df_eval.copy()
+    d["job_type"] = d["job_type"].map(labels)
+
+    # Melting the DataFrame
+    df_melted = d.melt(id_vars=['job_type', 'seed'], value_vars=['ep_rew_mean_real', 'ep_rew_mean_sim'], var_name='measure',
+                       value_name='cost')
+    df_melted["cost"] = df_melted["cost"]*-1
+
+    # Adding a new column 'platform'
+    df_melted["environment"] = df_melted['measure'].map({'ep_rew_mean_real': 'real', 'ep_rew_mean_sim': 'sim'})
+
+    # Dropping the 'measure' column, if not needed
+    df_melted.drop('measure', axis=1, inplace=True)
+
+    # Plot
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
+    plots_pendulum["eval"] = (fig, ax)
+    sns.barplot(x="job_type", y="cost", hue="environment", data=df_melted, palette=fcolor, ax=ax)
+
+    # Set legend & axis labels
+    ax.set_ylim(0, 1400)
+    ax.set_xlabel('environment')
+    ax.set_ylabel("cost")
+    ax.legend(handles=None, ncol=1, loc='best', fancybox=True, shadow=True)
+
+    # Train plot
+    d = df_train.copy()
+    d["job_type"] = d["job_type"].map(labels)
+
+    # Step 1: Group by 'transient/matched_percentage' and 'sigma', then interpolate 'transient/t_elapsed'
+    d_grouped = d.groupby(['job_type', 'seed'])
+
+    # Define a common 'transient/matched_percentage' range for interpolation
+    common_steps = np.linspace(0, 50_000, num=101)
+
+    # Function to interpolate 'transient/t_elapsed' for each group
+    def interpolate_group(group):
+        return np.interp(common_steps, group['train/total_timesteps'], group['train/ep_rew_mean'])
+
+
+    # Apply the interpolation
+    d_interpolated = d_grouped.apply(interpolate_group)
+
+    # Convert the interpolated data back to a DataFrame
+    d_interpolated = pd.DataFrame(d_interpolated.tolist(), index=d_interpolated.index)
+    d_interpolated_reset = d_interpolated.reset_index()
+    d_interpolated_reset_melted = d_interpolated_reset.melt(id_vars=['job_type', 'seed'], var_name='total_timesteps_interp',
+                                                            value_name='ep_rew_mean_interp')
+    d_interpolated_reset_melted["total_timesteps_interp"] = d_interpolated_reset_melted["total_timesteps_interp"].map(lambda x: common_steps[x])
+    d_interpolated_reset_melted["cost"] = d_interpolated_reset_melted["ep_rew_mean_interp"]*-1
+
+    # Plot
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
+    plots_pendulum["train"] = (fig, ax)
+    sns.lineplot(data=d_interpolated_reset_melted, x="total_timesteps_interp", y="cost", hue="job_type", ax=ax,
+                 palette=fcolor, errorbar="sd")
+
+    # Set legend & axis labels
+    ax.set_ylim(0, 1400)
+    ax.set_xlim(0, 50_000)
+    ax.set_xlabel("steps")
+    ax.set_ylabel("cost")
+    ax.legend(handles=None, ncol=1, loc="best", fancybox=True, shadow=True)
 
     # Computational complexity plots
     filters = {
@@ -114,8 +294,7 @@ if __name__ == "__main__":
         "config.topology_type": {"$in": ["bidirectional-ring", "unidirectional-ring", "unirandom-ring"]},
         "config.supergraph_type": {"$in": ["mcs"]},
         "config.sigma": {"$in": [0.0, 0.1, 0.2, 0.3]},
-        # "config.num_nodes": {"$in": [2, 4, 8, 16, 32, 64]},
-        "config.num_nodes": {"$in": [8, 16, 32, 64]},
+        "config.num_nodes": {"$in": [2, 4, 8, 16, 32, 64]},
         "config.sort_mode": {"$in": ["arbitrary", None, "null"]},
         "config.combination_mode": {"$in": ["linear", "null", None]},
         "config.backtrack": 5,  # 20
@@ -151,6 +330,12 @@ if __name__ == "__main__":
     d["topology"] = d["topology_type"]
     d["nodes"] = d["num_nodes"]
 
+    # Group by relevant columns and compute the mean
+    d = d.groupby(['supergraph_type', 'topology_type', 'topology', 'nodes', 'sigma']).agg({
+        't_elapsed': 'mean',
+        'efficiency_percentage': 'mean'
+    }).reset_index()
+
     # Plot
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=fullwidth_figsize)
     plot_computational_complexity = (fig, ax)
@@ -159,10 +344,13 @@ if __name__ == "__main__":
 
     # Set legend & axis labels
     ax.set_ylim(0, 100)
+    ax.set_xlim(5e0, 1.5e3)
     ax.set_xscale("log")
     ax.set_xlabel('elapsed time (s)')
     ax.set_ylabel("efficiency (%)")
-    ax.legend(handles=None, ncol=3, loc='upper right', fancybox=True, shadow=True, prop={'size': 7})
+    # Place the legend on the right outside of the figure
+    ax.legend(handles=ax.get_legend_handles_labels()[0], labels=ax.get_legend_handles_labels()[1],
+              ncol=2, loc='upper left', bbox_to_anchor=(1, 1), fancybox=True, shadow=True)
 
     # Transient plots
     filters = {
@@ -247,7 +435,7 @@ if __name__ == "__main__":
         ax.set_xlim(0, 100)
         ax.set_xlabel("matched (%)")
         ax.set_ylabel("elapsed time (s)")
-        ax.legend(handles=None, ncol=1, loc='upper left', fancybox=True, shadow=True, prop={'size': 7})
+        ax.legend(handles=None, ncol=1, loc='upper left', fancybox=True, shadow=True)
 
     # Ablation plots
     filters = {
@@ -323,7 +511,7 @@ if __name__ == "__main__":
         ax.set_ylim(0, 100)
         ax.set_xlabel('topology')
         ax.set_ylabel("efficiency (%)")
-        ax.legend(handles=None, ncol=1, loc='best', fancybox=True, shadow=True, prop={'size': 7})
+        ax.legend(handles=None, ncol=1, loc='best', fancybox=True, shadow=True)
 
         # Plot
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
@@ -336,7 +524,7 @@ if __name__ == "__main__":
             ax.set_yscale("log")
         ax.set_xlabel("topology")
         ax.set_ylabel("elapsed time (s)")
-        ax.legend(handles=None, ncol=1, loc='best', fancybox=True, shadow=True, prop={'size': 7})
+        ax.legend(handles=None, ncol=1, loc='best', fancybox=True, shadow=True)
 
     # Performance plots
     filters = {
@@ -378,9 +566,9 @@ if __name__ == "__main__":
 
         # Set legend & axis labels
         ax.set_ylim(0, 100)
-        ax.set_xlabel('number of nodes')
+        ax.set_xlabel('nodes')
         ax.set_ylabel("efficiency (%)")
-        ax.legend(handles=None, ncol=1, loc='upper right', fancybox=True, shadow=True, prop={'size': 7})
+        ax.legend(handles=None, ncol=1, loc='upper right', fancybox=True, shadow=True)
 
     # Plot performance_sigma
     plots_perf_sigma = {"bidirectional-ring": None, "unidirectional-ring": None, "unirandom-ring": None}
@@ -402,7 +590,7 @@ if __name__ == "__main__":
         ax.set_ylim(0, 100)
         ax.set_xlabel('sigma')
         ax.set_ylabel("efficiency (%)")
-        ax.legend(handles=None, ncol=1, loc='upper right', fancybox=True, shadow=True, prop={'size': 7})
+        ax.legend(handles=None, ncol=1, loc='upper right', fancybox=True, shadow=True)
 
     # Save
     PAPER_DIR = "/home/r2ci/Documents/project/MCS/MCS_RA-L/figures/python"
@@ -414,13 +602,27 @@ if __name__ == "__main__":
     # Save plots
     fig, ax = plot_computational_complexity
     fig.savefig(f"{PAPER_DIR}/computational_complexity{VERSION_ID}.pdf", bbox_inches='tight')
+    for pendulum_type, (fig, ax) in plots_pendulum.items():
+        fig.savefig(f"{PAPER_DIR}/pendulum_{pendulum_type}{VERSION_ID}.pdf", bbox_inches='tight')
+        if MUST_BREAK:
+            break
     for topology_type, (fig, ax) in plots_transient.items():
         fig.savefig(f"{PAPER_DIR}/transient_time_{topology_type}{VERSION_ID}.pdf", bbox_inches='tight')
+        if MUST_BREAK:
+            break
     for ablation_type, (fig, ax) in plots_ablation_efficiency.items():
         fig.savefig(f"{PAPER_DIR}/ablation_efficiency_{ablation_type}{VERSION_ID}.pdf", bbox_inches='tight')
+        if MUST_BREAK:
+            break
     for ablation_type, (fig, ax) in plots_ablation_time.items():
         fig.savefig(f"{PAPER_DIR}/ablation_time_{ablation_type}{VERSION_ID}.pdf", bbox_inches='tight')
+        if MUST_BREAK:
+            break
     for topology_type, (fig, ax) in plots_perf_size.items():
         fig.savefig(f"{PAPER_DIR}/performance_size_{topology_type}{VERSION_ID}.pdf", bbox_inches='tight')
+        if MUST_BREAK:
+            break
     for topology_type, (fig, ax) in plots_perf_sigma.items():
         fig.savefig(f"{PAPER_DIR}/performance_sigma_{topology_type}{VERSION_ID}.pdf", bbox_inches='tight')
+        if MUST_BREAK:
+            break
