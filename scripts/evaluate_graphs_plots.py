@@ -10,6 +10,17 @@ import matplotlib.patches as mpatches
 import supergraph.open_colors as oc
 
 
+def export_legend(fig, legend, expand=None):
+    expand = [-5, -5, 5, 5] if expand is None else expand
+    # fig = legend.figure
+    # fig.canvas.draw()
+    bbox = legend.get_window_extent()
+    bbox = bbox.from_extents(*(bbox.extents + np.array(expand)))
+    bbox = bbox.transformed(fig.dpi_scale_trans.inverted())
+    return bbox
+    # fig.savefig(filename, dpi="figure", bbox_inches=bbox)
+
+
 if __name__ == "__main__":
     # Setup sns plotting
     import seaborn as sns
@@ -23,11 +34,11 @@ if __name__ == "__main__":
     scaling = 5
     MUST_BREAK = False
     plt.rcParams['axes.labelweight'] = 'bold'
-    plt.rcParams['axes.labelsize'] = 5 * scaling
-    plt.rcParams['legend.fontsize'] = 4 * scaling
-    plt.rcParams['font.size'] = 6 * scaling
-    plt.rcParams['xtick.labelsize'] = 4 * scaling
-    plt.rcParams['ytick.labelsize'] = 4 * scaling
+    plt.rcParams['axes.labelsize'] = 6 * scaling
+    plt.rcParams['legend.fontsize'] = 5 * scaling
+    plt.rcParams['font.size'] = 7 * scaling
+    plt.rcParams['xtick.labelsize'] = 5 * scaling
+    plt.rcParams['ytick.labelsize'] = 5 * scaling
     plt.rcParams['xtick.major.pad'] = -0.0 * scaling
     plt.rcParams['ytick.major.pad'] = -0.0 * scaling
     plt.rcParams['lines.linewidth'] = 0.65 * scaling
@@ -209,7 +220,8 @@ if __name__ == "__main__":
     y_line = coefficients[0] * Xh + coefficients[1]
 
     # Plot the linear line
-    ax.plot(Xh, y_line, label='lin', color='black', linestyle='--', linewidth=plt.rcParams['lines.linewidth']*0.8)
+    ax.plot(Xh, y_line, color='black', linestyle='--', linewidth=plt.rcParams['lines.linewidth']*0.8)
+    # ax.plot(Xh, y_line, label='lin', color='black', linestyle='--', linewidth=plt.rcParams['lines.linewidth']*0.8)
 
     # Set legend & axis labels
     ax.set_ylim(1e6, 4e6)
@@ -435,7 +447,7 @@ if __name__ == "__main__":
         ax.set_xlim(0, 100)
         ax.set_xlabel("matched (%)")
         ax.set_ylabel("elapsed time (s)")
-        ax.legend(handles=None, ncol=1, loc='upper left', fancybox=True, shadow=True)
+        ax.legend(handles=None, ncol=4, loc='upper left', fancybox=True, shadow=True, bbox_to_anchor=(1.0, 1.0))
 
     # Ablation plots
     filters = {
@@ -494,6 +506,7 @@ if __name__ == "__main__":
     }
     plots_ablation_efficiency = {"combination_mode": None, "sort_mode": None, "backtrack": None}
     plots_ablation_time = {"combination_mode": None, "sort_mode": None, "backtrack": None}
+    ncol = {"combination_mode": 1, "sort_mode": 1, "backtrack": 1}
     for ablation_type in tqdm.tqdm(plots_ablation_efficiency.keys(), desc="Plotting ablation"):
         d = df[run_mask[ablation_type]].copy()
         # Only select data for this topology type and remove "topology_type" column from the dataframe
@@ -511,7 +524,44 @@ if __name__ == "__main__":
         ax.set_ylim(0, 100)
         ax.set_xlabel('topology')
         ax.set_ylabel("efficiency (%)")
-        ax.legend(handles=None, ncol=1, loc='best', fancybox=True, shadow=True)
+        if ablation_type == "backtrack":
+            from matplotlib.colors import LinearSegmentedColormap
+
+            # Create your custom colormap
+            cmap_colors = [(i, fcolor[i]) for i in [0, 5, 10, 15, 20]]
+            norm_vals = np.linspace(0, 20, len(cmap_colors))
+            colors = [(norm / 20, color) for norm, color in cmap_colors]
+            cmap = LinearSegmentedColormap.from_list('backtrack_cmap', colors)
+
+            _fig, _ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
+            # cbar_ax = _fig.add_axes([0.2, 0.85, thirdwidth_figsize[0], thirdwidth_figsize[1]])
+            cbar_ax = fig.add_axes([0.16, 0.775, 0.67, 0.65])
+
+            # Hide grid lines
+            cbar_ax.grid(False)
+
+            # Hide axes ticks
+            cbar_ax.set_xticks([])
+            cbar_ax.set_yticks([])
+
+            # Hide axes
+            cbar_ax.set_frame_on(False)
+            cbar_ax.xaxis.set_visible(False)
+            cbar_ax.yaxis.set_visible(False)
+
+            # Generate some example heatmap data
+            data = np.random.randint(0, 21, (10, 10))
+            cax = _ax.matshow(data, cmap=cmap)
+
+            # Remove existing colorbar if any
+            if len(_fig.axes) > 1:
+                _fig.delaxes(_fig.axes[-1])
+
+            # Backtrack
+            cbar = plt.colorbar(cax, ax=cbar_ax, ticks=[0, 5, 10, 15, 20], orientation='horizontal', ticklocation='top')
+            ax.get_legend().remove()
+        else:
+            ax.legend(handles=None, ncol=ncol[ablation_type], loc='best', fancybox=True, shadow=True)
 
         # Plot
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
@@ -524,7 +574,45 @@ if __name__ == "__main__":
             ax.set_yscale("log")
         ax.set_xlabel("topology")
         ax.set_ylabel("elapsed time (s)")
-        ax.legend(handles=None, ncol=1, loc='best', fancybox=True, shadow=True)
+        if ablation_type == "backtrack":
+            from matplotlib.colors import LinearSegmentedColormap
+
+            # Create your custom colormap
+            cmap_colors = [(i, fcolor[i]) for i in [0, 5, 10, 15, 20]]
+            norm_vals = np.linspace(0, 20, len(cmap_colors))
+            colors = [(norm / 20, color) for norm, color in cmap_colors]
+            cmap = LinearSegmentedColormap.from_list('backtrack_cmap', colors)
+
+            _fig, _ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
+            # cbar_ax = _fig.add_axes([0.2, 0.85, thirdwidth_figsize[0], thirdwidth_figsize[1]])
+            cbar_ax = fig.add_axes([0.16, 0.775, 0.67, 0.65])
+
+            # Hide grid lines
+            cbar_ax.grid(False)
+
+            # Hide axes ticks
+            cbar_ax.set_xticks([])
+            cbar_ax.set_yticks([])
+
+            # Hide axes
+            cbar_ax.set_frame_on(False)
+            cbar_ax.xaxis.set_visible(False)
+            cbar_ax.yaxis.set_visible(False)
+
+            # Generate some example heatmap data
+            data = np.random.randint(0, 21, (10, 10))
+            cax = _ax.matshow(data, cmap=cmap)
+
+            # Remove existing colorbar if any
+            if len(_fig.axes) > 1:
+                _fig.delaxes(_fig.axes[-1])
+
+            # Backtrack
+            cbar = plt.colorbar(cax, ax=cbar_ax, ticks=[0, 5, 10, 15, 20], orientation='horizontal', ticklocation='top')
+            ax.set_ylim([0, 140])
+            ax.get_legend().remove()
+        else:
+            ax.legend(handles=None, ncol=ncol[ablation_type], loc='best', fancybox=True, shadow=True)
 
     # Performance plots
     filters = {
@@ -568,7 +656,7 @@ if __name__ == "__main__":
         ax.set_ylim(0, 100)
         ax.set_xlabel('nodes')
         ax.set_ylabel("efficiency (%)")
-        ax.legend(handles=None, ncol=1, loc='upper right', fancybox=True, shadow=True)
+        ax.legend(handles=None, ncol=3, loc='upper right', fancybox=True, shadow=True, bbox_to_anchor=(2, 2))
 
     # Plot performance_sigma
     plots_perf_sigma = {"bidirectional-ring": None, "unidirectional-ring": None, "unirandom-ring": None}
@@ -590,7 +678,7 @@ if __name__ == "__main__":
         ax.set_ylim(0, 100)
         ax.set_xlabel('sigma')
         ax.set_ylabel("efficiency (%)")
-        ax.legend(handles=None, ncol=1, loc='upper right', fancybox=True, shadow=True)
+        ax.legend(handles=None, ncol=3, loc='upper right', fancybox=True, shadow=True, bbox_to_anchor=(2, 2))
 
     # Save
     PAPER_DIR = "/home/r2ci/Documents/project/MCS/MCS_RA-L/figures/python"
@@ -607,22 +695,52 @@ if __name__ == "__main__":
         if MUST_BREAK:
             break
     for topology_type, (fig, ax) in plots_transient.items():
+        fig.savefig(f"{PAPER_DIR}/transient_time_{topology_type}_legend{VERSION_ID}.pdf", bbox_inches=export_legend(fig, ax.get_legend()))
+        ax.get_legend().remove()
         fig.savefig(f"{PAPER_DIR}/transient_time_{topology_type}{VERSION_ID}.pdf", bbox_inches='tight')
         if MUST_BREAK:
             break
     for ablation_type, (fig, ax) in plots_ablation_efficiency.items():
-        fig.savefig(f"{PAPER_DIR}/ablation_efficiency_{ablation_type}{VERSION_ID}.pdf", bbox_inches='tight')
+        from matplotlib.transforms import Bbox, TransformedBbox
+        fig_width, fig_height = fig.get_size_inches()
+        width, height = thirdwidth_figsize  # The dimensions you want for the lower-right corner in inches
+        # bbox = Bbox.from_bounds(0, 0, width, height)
+        bbox = ax.get_tightbbox(fig.canvas.get_renderer())
+        # Convert the bounding box to inches
+        bbox_inches = TransformedBbox(bbox, fig.dpi_scale_trans.inverted())
+        # bbox_inches = BBo
+        fig.savefig(
+            f"{PAPER_DIR}/ablation_efficiency_{ablation_type}{VERSION_ID}.pdf",
+            bbox_inches=bbox_inches
+        )
+        # fig.savefig(f"{PAPER_DIR}/ablation_efficiency_{ablation_type}{VERSION_ID}.pdf", bbox_inches='tight')
         if MUST_BREAK:
             break
     for ablation_type, (fig, ax) in plots_ablation_time.items():
+        from matplotlib.transforms import Bbox, TransformedBbox
+        fig_width, fig_height = fig.get_size_inches()
+        width, height = thirdwidth_figsize  # The dimensions you want for the lower-right corner in inches
+        # bbox = Bbox.from_bounds(0, 0, width, height)
+        bbox = ax.get_tightbbox(fig.canvas.get_renderer())
+        # Convert the bounding box to inches
+        bbox_inches = TransformedBbox(bbox, fig.dpi_scale_trans.inverted())
+        # bbox_inches = BBo
+        fig.savefig(
+            f"{PAPER_DIR}/ablation_time_{ablation_type}{VERSION_ID}.pdf",
+            bbox_inches=bbox_inches
+        )
         fig.savefig(f"{PAPER_DIR}/ablation_time_{ablation_type}{VERSION_ID}.pdf", bbox_inches='tight')
         if MUST_BREAK:
             break
     for topology_type, (fig, ax) in plots_perf_size.items():
+        fig.savefig(f"{PAPER_DIR}/performance_size_{topology_type}_legend{VERSION_ID}.pdf", bbox_inches=export_legend(fig, ax.get_legend()))
+        ax.get_legend().remove()
         fig.savefig(f"{PAPER_DIR}/performance_size_{topology_type}{VERSION_ID}.pdf", bbox_inches='tight')
         if MUST_BREAK:
             break
     for topology_type, (fig, ax) in plots_perf_sigma.items():
+        fig.savefig(f"{PAPER_DIR}/performance_sigma_{topology_type}_legend{VERSION_ID}.pdf", bbox_inches=export_legend(fig, ax.get_legend()))
+        ax.get_legend().remove()
         fig.savefig(f"{PAPER_DIR}/performance_sigma_{topology_type}{VERSION_ID}.pdf", bbox_inches='tight')
         if MUST_BREAK:
             break
