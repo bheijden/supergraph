@@ -116,7 +116,7 @@ if __name__ == "__main__":
         0.3: "violet",
         # Pendulum
         "async": "indigo",
-        "deterministic": "red",
+        "deterministic": "orange",
         # Environment
         "real": "indigo",
         "sim": "red",
@@ -210,7 +210,8 @@ if __name__ == "__main__":
     # Plot
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
     plots_pendulum["speed"] = (fig, ax)
-    sns.scatterplot(x="supergraph/efficiency_percentage", y="speed/fps", hue="supergraph_type", palette=fcolor, ax=ax, data=d, legend=True)
+    sns.scatterplot(x="supergraph/efficiency_percentage", y="speed/fps", hue="supergraph_type", palette=fcolor, ax=ax, data=d, legend=True,
+                    hue_order=[labels[k] for k in ["mcs", "generational", "topological"]])
 
     # Fit a linear regression model using NumPy
     X = d["supergraph/efficiency_percentage"].values
@@ -252,7 +253,10 @@ if __name__ == "__main__":
     # Plot
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
     plots_pendulum["eval"] = (fig, ax)
-    sns.barplot(x="job_type", y="cost", hue="environment", data=df_melted, palette=fcolor, ax=ax)
+    # sns.barplot(x="job_type", y="cost", hue="environment", data=df_melted, palette=fcolor, ax=ax)
+    sns.barplot(x="environment", y="cost", hue="job_type", data=df_melted, palette=fcolor, ax=ax,
+                hue_order=[labels[k] for k in ["async", "deterministic"]],
+                order=[k for k in ["sim", "real"]])
 
     # Set legend & axis labels
     ax.set_ylim(0, 1400)
@@ -535,7 +539,7 @@ if __name__ == "__main__":
 
             _fig, _ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
             # cbar_ax = _fig.add_axes([0.2, 0.85, thirdwidth_figsize[0], thirdwidth_figsize[1]])
-            cbar_ax = fig.add_axes([0.16, 0.775, 0.67, 0.65])
+            cbar_ax = fig.add_axes([0.16, 0.75, 0.67, 0.65])
 
             # Hide grid lines
             cbar_ax.grid(False)
@@ -585,7 +589,7 @@ if __name__ == "__main__":
 
             _fig, _ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
             # cbar_ax = _fig.add_axes([0.2, 0.85, thirdwidth_figsize[0], thirdwidth_figsize[1]])
-            cbar_ax = fig.add_axes([0.16, 0.775, 0.67, 0.65])
+            cbar_ax = fig.add_axes([0.16, 0.75, 0.67, 0.65])
 
             # Hide grid lines
             cbar_ax.grid(False)
@@ -665,7 +669,7 @@ if __name__ == "__main__":
         plots_perf_sigma[topology_type] = (fig, ax)
 
         # Only select data for this topology type and remove "topology_type" column from the dataframe
-        d = df[(df["topology_type"] == topology_type) & (df["num_nodes"] == 32)]
+        d = df[(df["topology_type"] == topology_type) & (df["num_nodes"] == 8)]
         d = d.drop(columns=["topology_type"])
         # Apply mapping labels on "supergraph_type" column
         d["supergraph_type"] = d["supergraph_type"].map(labels)
@@ -719,17 +723,19 @@ if __name__ == "__main__":
     for ablation_type, (fig, ax) in plots_ablation_time.items():
         from matplotlib.transforms import Bbox, TransformedBbox
         fig_width, fig_height = fig.get_size_inches()
-        width, height = thirdwidth_figsize  # The dimensions you want for the lower-right corner in inches
+        # width, height = thirdwidth_figsize  # The dimensions you want for the lower-right corner in inches
         # bbox = Bbox.from_bounds(0, 0, width, height)
         bbox = ax.get_tightbbox(fig.canvas.get_renderer())
         # Convert the bounding box to inches
         bbox_inches = TransformedBbox(bbox, fig.dpi_scale_trans.inverted())
+        # Increase the height of the bounding box by 0.1 inch
+        x0, y0, x1, y1 = bbox_inches.bounds
+        bbox_inches_add = Bbox.from_bounds(x0, y0, x1 - x0, y1 - y0 + 0.01)
         # bbox_inches = BBo
         fig.savefig(
             f"{PAPER_DIR}/ablation_time_{ablation_type}{VERSION_ID}.pdf",
-            bbox_inches=bbox_inches
+            bbox_inches=bbox_inches_add
         )
-        fig.savefig(f"{PAPER_DIR}/ablation_time_{ablation_type}{VERSION_ID}.pdf", bbox_inches='tight')
         if MUST_BREAK:
             break
     for topology_type, (fig, ax) in plots_perf_size.items():

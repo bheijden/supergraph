@@ -285,14 +285,16 @@ def create_graph(
     #     sig_scaled = sigma * (th_scaled/theta)
     #     X = ornstein_uhlenbeck_samples(rng=rng, theta=th_scaled, mu=1 / f, sigma=sig_scaled, dt=1 / f, x0=1 / f, n=n)
     #     return X
-
+    #
     # fn_dt = [partial(scale_theta_sigma, f) for f in fs]
 
-    # # Generate samples
+    # Generate samples
     # for f, fn in zip(fs, fn_dt):
     #     X = fn(n=1000000)
     #     # Print statistics and scaled statistics
-    #     print(f"{f} | Mean: {np.mean(X)}, Std: {np.std(X)} | scaled(Mean): {np.mean(X)*f}, scaled(Std): {np.std(X)*f}")
+    #     est_var = sigma ** 2 / (2 * theta)
+    #     est_std = np.sqrt(est_var)
+    #     print(f"{f} | Mean: {np.mean(X)}, Std: {np.std(X)} | est_std: {est_std} | scaled(Mean): {np.mean(X)*f}, scaled(Std): {np.std(X)*f}")
 
     dt = [
         np.stack((np.linspace(1 / f, T, ceil(T * f)), np.clip(fn(n=ceil(T * f)), 1 / f, np.inf)), dtype="float32")
