@@ -1,11 +1,9 @@
 import networkx as nx
 import supergraph as sg
 import supergraph.evaluate
+import supergraph.paper as paper
 
 if __name__ == '__main__':
-	# todo: store all edges in S
-	# todo: make algorithm deterministic
-
 	# Function inputs
 	MUST_PLOT = False
 	SEED = 11  # 22
@@ -13,13 +11,13 @@ if __name__ == '__main__':
 	SIGMA = 0.3
 	WINDOW = 0
 	NUM_NODES = 8  # 10
-	MAX_FREQ = 200
+	MAX_FREQ = 20
 	COMBINATION_MODE = "linear"
 	EPISODES = 2
 	LENGTH = 100
 
 	LEAF_KIND = 0
-	BACKTRACK = 20
+	BACKTRACK = 3
 	SORT_FN = None  # supergraph.evaluate.perfect_sort
 
 	# Define graph
@@ -38,17 +36,15 @@ if __name__ == '__main__':
 		G = supergraph.evaluate.prune_by_leaf(G, LEAF_KIND)
 		Gs.append(G)
 
-	# Save and reload Gs with pickle
-	# import pickle
-	# with open("Gs.pkl", "wb") as f:
-	# 	pickle.dump(Gs, f)
-	# with open("Gs.pkl", "rb") as f:
-	# 	Gs = pickle.load(f)
+	# Get excalidraw graph
+	G0, G1, G2 = supergraph.paper.get_example_graphs()
+	Gs = [G0, G1, G2]
 
-	# Define initial supergraph
-	S_init, _ = sg.as_supergraph(Gs[0], leaf_kind=LEAF_KIND, sort=[f"{LEAF_KIND}_0"])
+	# Run paper algorithms
+	S_paper, Ms, Ps = paper.algorithm_1(supervisor="agent", backtrack=BACKTRACK, Gs=Gs, max_topo=1, max_comb=1)
 
 	# Grow supergraph
+	S_init, _ = sg.as_supergraph(Gs[0], leaf_kind=LEAF_KIND, sort=[f"{LEAF_KIND}_0"])  # Define initial supergraph
 	S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph(Gs, S_init, LEAF_KIND,
 	                                                        combination_mode=COMBINATION_MODE,
 	                                                        backtrack=BACKTRACK,

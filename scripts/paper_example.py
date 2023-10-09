@@ -3,6 +3,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import supergraph as sg
 import supergraph.evaluate as eval
+import supergraph.paper as paper
 
 
 # def progress_fn(t_elapsed, Gs_num_partitions, Gs_matched, i_partition, G_monomorphism, G, S):
@@ -16,7 +17,7 @@ if __name__ == '__main__':
 	SORT_FN = None  # supergraph.evaluate.perfect_sort
 
 	# Define graph
-	Gs = list(eval.get_excalidraw_graph())
+	Gs = list(paper.get_example_graphs())
 	Gs = [Gs[1], Gs[2], Gs[0]]
 
 	if MUST_PLOT:

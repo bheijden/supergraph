@@ -4,7 +4,7 @@ from functools import partial
 from typing import List, Set, Tuple, Union
 from collections import deque
 import numpy as np
-from math import floor, ceil
+from math import ceil
 
 import networkx as nx
 
@@ -42,7 +42,7 @@ def plot_graph(
     node_alpha = [data["alpha"] for n, data in nodes]
     node_ecolor = [data["edgecolor"] for n, data in nodes]
     node_fcolor = [data["facecolor"] for n, data in nodes]
-    node_labels = {n: data["seq"] for n, data in nodes}
+    node_labels = {n: data.get("seq", "") for n, data in nodes}
 
     # Get positions
     pos = {n: data["position"] for n, data in nodes}
@@ -80,145 +80,6 @@ def plot_graph(
     # ax.set_yticks(yticks, labels=ylabels)
     # ax.tick_params(left=False, bottom=True, labelleft=True, labelbottom=True)
     ax.tick_params(left=False, bottom=True, labelleft=False, labelbottom=True)
-
-
-def get_excalidraw_graph():
-    def _get_ts(_f, _T):
-        # Get the number of time steps
-        _n = floor(_T * _f) + 1
-
-        # Get the time steps
-        _ts = np.linspace(0, (_n - 1) / _f, _n)
-
-        return _ts
-
-    order = ["world", "sensor", "actuator", "agent"]
-    order = {k: i for i, k in enumerate(order)}
-    cscheme = {"world": "grape", "sensor": "pink", "agent": "teal", "actuator": "orange"}
-    ecolor, fcolor = oc.cscheme_fn(cscheme)
-
-    # Graph definition
-    T = 0.3
-    f = dict(world=20, sensor=20, agent=10, actuator=10)
-    phase = dict(world=0.0, sensor=0.2 / 20, agent=0.4 / 20, actuator=1.2 / 20)
-    ts = {k: _get_ts(fn, T) + phase[k] for k, fn in f.items()}
-
-    # Initialize a Directed Graph
-    G0 = nx.DiGraph()
-
-    # Add nodes
-    node_kinds = dict()
-    for n in ts.keys():
-        node_kinds[n] = []
-        for i, _ts in enumerate(ts[n]):
-            data = dict(
-                kind=n,
-                seq=i,
-                ts=_ts,
-                order=order[n],
-                edgecolor=ecolor[n],
-                facecolor=fcolor[n],
-                position=(_ts, order[n]),
-                alpha=1.0,
-            )
-            id = f"{n}_{i}"
-            G0.add_node(id, **data)
-            node_kinds[n].append(id)
-
-    # Add edges
-    edges = [("world", "sensor"), ("sensor", "agent"), ("agent", "actuator"), ("actuator", "world")]
-    for (i, o) in tqdm(edges, desc="Generate graph"):
-        for idx, id_seq in enumerate(node_kinds[i]):
-            data_source = G0.nodes[id_seq]
-            # Add stateful edge
-            if idx > 0:
-                data = {"delay": 0.0, "pruned": False}
-                data.update(**edge_data)
-                G0.add_edge(node_kinds[i][idx - 1], id_seq, **data)
-            for id_tar in node_kinds[o]:
-                data_target = G0.nodes[id_tar]
-                if data_target["ts"] >= data_source["ts"]:
-                    data = {"delay": 0.0, "pruned": False}
-                    data.update(**edge_data)
-                    G0.add_edge(id_seq, id_tar, **data)
-                    break
-
-    def get_delayed_graph(_G, _delay, _node_kinds):
-        _Gd = _G.copy(as_view=False)
-
-        for (source, target, d) in _delay:
-            ts_recv = _Gd.nodes[source]["ts"] + d
-            undelayed_data = _Gd.edges[(source, target)]
-            target_data = _Gd.nodes[target]
-            target_kind = target_data["kind"]
-            _Gd.remove_edge(source, target)
-            for id_tar in _node_kinds[target_kind]:
-                data_target = _Gd.nodes[id_tar]
-                if data_target["ts"] >= ts_recv:
-                    delayed_data = undelayed_data.copy()
-                    delayed_data.update(**{"delay": d, "pruned": False})
-                    delayed_data.update(**delayed_edge_data)
-                    _Gd.add_edge(source, id_tar, **delayed_data)
-                    break
-        return _Gd
-
-    # Apply delays
-    delays_1 = [("actuator_0", "world_2", 0.9 / 20), ("world_1", "sensor_1", 0.9 / 20), ("world_4", "sensor_4", 0.9 / 20)]
-    G1 = get_delayed_graph(G0, delays_1, node_kinds)
-
-    # Apply delays
-    delays_2 = [("sensor_2", "agent_1", 0.9 / 20), ("actuator_1", "world_4", 0.9 / 20)]
-    G2 = get_delayed_graph(G0, delays_2, node_kinds)
-
-    return G0, G1, G2
-
-
-def run_excalidraw_example():
-    # Get excalidraw graph
-    G0, G1, G2 = get_excalidraw_graph()
-
-    # Split
-    from deprecated import balanced_partition
-
-    root_kind = "agent"
-    G0_partition = balanced_partition(G0, root_kind)
-    G1_partition = balanced_partition(G1, root_kind)
-    G2_partition = balanced_partition(G2, root_kind)
-
-    # Get all topological sorts
-    G0_partition_topo = {k: list(nx.all_topological_sorts(G0_partition[k])) for k in G0_partition.keys()}
-    G1_partition_topo = {k: list(nx.all_topological_sorts(G1_partition[k])) for k in G1_partition.keys()}
-    G2_partition_topo = {k: list(nx.all_topological_sorts(G2_partition[k])) for k in G2_partition.keys()}
-
-    # kind_to_index, unique_kinds = get_unique_kinds(G0)
-
-    # G0_partition_onehot = {k: [topo_to_onehot([G0.nodes[n] for n in g], kind_to_index) for g in G0_partition_topo[k]] for k in G0_partition_topo.keys()}
-
-    # Create new plot
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(nrows=3)
-    fig.set_size_inches(12, 15)
-    plot_graph(axes[0], G0)
-    plot_graph(axes[1], G1)
-    plot_graph(axes[2], G2)
-
-    fig, axes = plt.subplots(nrows=3)
-    fig.set_size_inches(12, 15)
-    for idx, G_partition in enumerate([G0_partition, G1_partition, G2_partition]):
-        for k, p in G_partition.items():
-            # Create new plot
-            print(f"Partition {k}")
-            plot_graph(axes[idx], p)
-    plt.show()
-
-    # Given
-    for P in [G0_partition_topo, G1_partition_topo, G2_partition_topo]:
-        s = 0
-        for k, v in P.items():
-            s += len(v)
-            print(k, len(v))
-        print(s)
 
 
 def ornstein_uhlenbeck_samples(rng, theta, mu, sigma, dt, x0, n):

@@ -564,7 +564,7 @@ def grow_supergraph(
     num_partitions = sum([len(leafs) for leafs in leafs_G])
     num_nodes = sum([len(G) for G in Gs])
 
-    # Chain the iterators together
+    # Initialize progress bar
     pbar = tqdm.tqdm(total=num_partitions, desc="Growing supergraph", disable=not progress_bar)
 
     # Main loop to grow the supergraph
