@@ -1,5 +1,6 @@
 import supergraph as sg
 import supergraph.evaluate
+import supergraph.paper as paper
 
 
 def test_integration():
@@ -61,3 +62,14 @@ def test_integration():
 
 	# Print results
 	print(sum([len(m) for m in m_sup]), sum([len(m) for m in m_lin]), sum([len(m) for m in m_gen]), sum([len(m) for m in m_top]))
+
+
+def test_paper_integration():
+	# Generate three example computation graphs
+	G0, G1, G2 = paper.get_example_graphs()
+	Gs = [G0, G1, G2]
+
+	# Find the Minimum Common Supergraph (S) and mappings (Ms) to the corresponding partitions (Ps)
+	# IMPORTANT! paper.algorithm_1(...) is optimized for readability, instead of speed.
+	# Use supergraph.grow_supergraph(...) instead if speed is important.
+	S, Ms, Ps = paper.algorithm_1(supervisor="agent", backtrack=3, Gs=Gs, max_topo=1, max_comb=1)
