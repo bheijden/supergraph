@@ -146,6 +146,9 @@ def algorithm_1(
             if len(Pc.nodes()) > 0:
                 S = format_supergraph(S)
 
+    # Format supergraph S
+    S = format_supergraph(S)
+
     # Validate that Ms are monomorphisms
     for i in Ps.keys():
         for j in Ps[i].keys():
