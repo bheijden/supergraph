@@ -1,3 +1,4 @@
+import dill as pickle
 import os
 import json
 import hashlib
@@ -28,9 +29,9 @@ if __name__ == "__main__":
     # cmap = plt.rcParams['axes.prop_cycle'].by_key()['color']
     # cmap = cmap[1:] + cmap[:1]
     # for key, value in plt.rcParams.items():
-        # if "font.size" not in key:
-            # continue
-        # print(key, value)
+    # if "font.size" not in key:
+    # continue
+    # print(key, value)
     scaling = 5
     MUST_BREAK = False
     plt.rcParams['axes.labelweight'] = 'bold'
@@ -57,11 +58,13 @@ if __name__ == "__main__":
     rescaled_figsize = [rescaled_width, rescaled_height]
     fullwidth_figsize = [c*s for c, s in zip([1, 0.52], rescaled_figsize)]
     thirdwidth_figsize = [c * s for c, s in zip([1 / 3, 0.5], rescaled_figsize)]
+    twothirdwidth_figsize = [c * s for c, s in zip([2 / 3, 0.5], rescaled_figsize)]
     sixthwidth_figsize = [c * s for c, s in zip([1 / 6, 0.5], rescaled_figsize)]
     print("Default figsize:", default_figsize)
     print("Rescaled figsize:", rescaled_figsize)
     print("Fullwidth figsize:", fullwidth_figsize)
     print("Thirdwidth figsize:", thirdwidth_figsize)
+    print("Twothirdwidth figsize:", twothirdwidth_figsize)
     print("Sixthwidth figsize:", sixthwidth_figsize)
     labels = {
         # Supergraph type
@@ -103,6 +106,8 @@ if __name__ == "__main__":
         # Sort mode
         "arbitrary": "indigo",
         "optimal": "red",
+        # line
+        "zoomed_frame": "gray",
         # Backtrack
         0: "red",
         5: "pink",
@@ -120,9 +125,182 @@ if __name__ == "__main__":
         # Environment
         "real": "indigo",
         "sim": "red",
-        }
+    }
     cscheme.update({labels[k]: v for k, v in cscheme.items() if k in labels.keys()})
     ecolor, fcolor = oc.cscheme_fn(cscheme)
+
+    # Box pushing plots
+    all_plots_box = dict(fixed={"speed": None, "traj": None, "final": None, "zoom": None},
+                         variable={"speed": None, "traj": None, "final": None, "zoom": None})
+
+    # Prepare data frames
+    ERRORBAR = ("ci", 95)  # "sd"  #
+    LOG_PATH = "/home/r2ci/rex/paper/logs"
+    ALL_CONFIGS = {"variable": {"t_zoom": 10,
+                                "t_final": 16,
+                                "yticks_speed": [2, 4, 6, 8],
+                                "ylim_traj": [0, 52],
+                                "ylim_zoom": [0, 6],
+                                "ylim_final": [0, 10],
+                                "xticks_traj": [0, 4, 8, 12, 16],
+                                "xticks_zoom": [10, 12, 14, 16],
+                                },
+                   "fixed": {"t_zoom": 19,
+                             "t_final": 25,
+                             "yticks_speed": [2, 4, 6, 8],
+                             "ylim_traj": [0, 52],
+                             "ylim_zoom": [0, 6],
+                             "ylim_final": [0, 10],
+                             "xticks_traj": [0, 5, 10, 15, 20, 25],
+                             "xticks_zoom": [19, 21, 23, 25],
+                             }
+                   }
+    ALL_EXP_DIRS = {
+        "fixed": [
+            f"{LOG_PATH}/2023-12-12-1746_real_2ndcalib_rex_randomeps_MCS_recorded_3Hz_3iter_vx300s",
+            f"{LOG_PATH}/2023-12-12-1824_real_2ndcalib_rex_randomeps_topological_recorded_3Hz_3iter_vx300s",
+            f"{LOG_PATH}/2023-12-12-1814_real_2ndcalib_rex_randomeps_generational_recorded_3Hz_3iter_vx300s",
+            f"{LOG_PATH}/2023-12-12-1834_real_2ndcalib_brax_3Hz_3iter_vx300s",
+        ],
+        "variable": [
+            # Variable + video
+            f"{LOG_PATH}/2023-12-14-1058_real_2ndcalib_rex_randomeps_MCS_recorded_VarHz_3iter_record_imagevx300s",
+            f"{LOG_PATH}/2023-12-14-1141_real_2ndcalib_rex_randomeps_topological_recorded_VarHz_3iter_record_imagevx300s",
+            f"{LOG_PATH}/2023-12-14-1131_real_2ndcalib_rex_randomeps_generational_recorded_VarHz_3iter_record_imagevx300s",
+            f"{LOG_PATH}/2023-12-14-1159_real_2ndcalib_brax_VarHz_3iter_record_image_vx300s",
+            # Variable
+            # f"{LOG_PATH}/2023-12-12-1636_real_2ndcalib_rex_randomeps_MCS_recorded_VarHz_3iter_vx300s",
+            # f"{LOG_PATH}/2023-12-12-1718_real_2ndcalib_rex_randomeps_topological_recorded_VarHz_3iter_vx300s",
+            # f"{LOG_PATH}/2023-12-12-1708_real_2ndcalib_rex_randomeps_generational_recorded_VarHz_3iter_vx300s",
+            # f"{LOG_PATH}/2023-12-12-1734_real_2ndcalib_brax_VarHz_3iter_vx300s",
+        ]
+    }
+
+    for name, plots_box in all_plots_box.items():
+        EXP_DIRS = ALL_EXP_DIRS[name]
+        CONFIGS = ALL_CONFIGS[name]
+        df_perf = []
+        df_speed = []
+        for LOG_DIR in EXP_DIRS:
+            with open(f"{LOG_DIR}/eval_data.pkl", "rb") as f:
+                data = pickle.load(f)
+
+            # Add performance data to the data frame
+            timestamps_tiled = np.tile(data["timestamps"], data["cm"].shape[0])
+            for t, cm in zip(timestamps_tiled, data["cm"].flatten()):
+                # For each cost, create a dictionary with 'key' and 'cost'
+                df_perf.append({"supergraph_type": data["supergraph_type"], "time": t, "cm": cm})
+
+            # Add speed data to the data frame
+            if data["supergraph_type"] in ["mcs", "generational", "topological", "deterministic"]:
+                df_speed.append({"supergraph_type": data["supergraph_type"], "supergraph/efficiency_percentage": data["efficiency"], "delay": data["delay"],
+                                 "speed/fps": 1/data["delay"], "rate": data["rate"]})
+        # Convert the list of dictionaries to a DataFrame
+        df_perf = pd.DataFrame(df_perf)
+        df_speed = pd.DataFrame(df_speed)
+
+        # Relabel
+        df_perf["supergraph_type"] = df_perf["supergraph_type"].map(labels)
+
+        # Plot speed
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
+        plots_box["speed"] = (fig, ax)
+        sns.scatterplot(x="supergraph/efficiency_percentage", y="speed/fps", hue="supergraph_type", palette=fcolor, ax=ax,
+                        data=df_speed, legend=True,
+                        hue_order=[labels[k] for k in ["mcs", "generational", "topological", "deterministic"]])
+
+        # Filter out rows where 'supergraph_type' is 'deterministic'
+        filtered_df = df_speed[df_speed["supergraph_type"] != "deterministic"]
+
+        # Fit a linear regression model using NumPy
+        X = filtered_df["supergraph/efficiency_percentage"].values
+        y = filtered_df["speed/fps"].values
+        coefficients = np.polyfit(X, y, 1)
+        Xh = np.linspace(0, 100, 100)  # X
+        y_line = coefficients[0] * Xh + coefficients[1]
+
+        # Plot the linear line
+        ax.plot(Xh, y_line, color='black', linestyle='--', linewidth=plt.rcParams['lines.linewidth'] * 0.8)
+
+        # Set legend & axis labels
+        ax.set_ylim(2, 3.8)
+        ax.set_yticks(CONFIGS["yticks_speed"])
+        ax.set_xlim(0, 100)
+        ax.set_xlabel('efficiency (%)')
+        ax.set_ylabel("speed (Hz)")
+        # Place the legend on the right outside of the figure
+        ax.legend(handles=ax.get_legend_handles_labels()[0], labels=ax.get_legend_handles_labels()[1],
+                  # ncol=1, loc='best', bbox_to_anchor=(1, 1), fancybox=True, shadow=True)
+                  ncol=4, loc='upper left', fancybox=True, shadow=True, bbox_to_anchor=(2, 2))
+
+        # Plot trajectory
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
+        plots_box["traj"] = (fig, ax)
+        sns.lineplot(data=df_perf, x="time", y="cm", hue="supergraph_type", ax=ax, legend=True,
+                     palette=fcolor, errorbar=ERRORBAR, hue_order=[labels[k] for k in ["mcs", "generational", "topological", "deterministic"]])
+
+        # Set legend & axis labels
+        t_final = CONFIGS["t_final"]
+        ax.set_ylim(*CONFIGS["ylim_traj"])
+        ax.set_xlim(0, t_final)
+        ax.set_xticks(CONFIGS["xticks_traj"])
+        ax.set_xlabel("time (s)")
+        ax.set_ylabel("distance (cm)")
+        # ax.legend(handles=None, ncol=1, loc="best", fancybox=True, shadow=True)
+
+        # Plot trajectory
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
+        plots_box["zoom"] = (fig, ax)
+        sns.lineplot(data=df_perf, x="time", y="cm", hue="supergraph_type", ax=ax, legend=True,
+                     palette=fcolor, errorbar=ERRORBAR, hue_order=[labels[k] for k in ["mcs", "generational", "topological", "deterministic"]])
+
+        # Set legend & axis labels
+        t_zoom = CONFIGS["t_zoom"]
+        ax.set_xlim(t_zoom, t_final)
+        ax.set_xticks(CONFIGS["xticks_zoom"])
+        ax.set_ylim(*CONFIGS["ylim_zoom"])
+        ax.set_xlabel("time (s)")
+        ax.set_ylabel("distance (cm)")
+        # ax.legend(handles=None, ncol=1, loc="best", fancybox=True, shadow=True)
+
+        # Plot zoomed frame from [t_zoom, t_final] and y-axis from [0, 10]
+        # Create a rectangle patch
+        import matplotlib.patches as patches
+        rect = patches.Rectangle((t_zoom, 0), t_final-t_zoom, 6, linewidth=1, edgecolor=ecolor["zoomed_frame"], facecolor='none')
+
+        # Add the rectangle to the Axes
+        plots_box["traj"][1].add_patch(rect)
+
+        # Assign experiment identifiers
+        df_perf['experiment_id'] = df_perf.groupby(['supergraph_type', 'time']).cumcount()
+
+        # Function to interpolate for a given group using NumPy
+        def interpolate_group(group, t_eval):
+            return np.interp(t_eval, group['time'], group['cm'])
+
+        # Apply interpolation for each supergraph_type and experiment
+        interpolated_values = df_perf.groupby(['supergraph_type', 'experiment_id']).apply(interpolate_group, t_eval=t_final)
+
+        # Reset index to convert MultiIndex to columns
+        df_final = interpolated_values.reset_index()
+        df_final.columns = ['supergraph_type', 'experiment_id', 'cm_at_t_final']
+
+        # Plot
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
+        plots_box["final"] = (fig, ax)
+        sns.barplot(x="supergraph_type", y="cm_at_t_final", hue="supergraph_type", data=df_final, palette=fcolor, ax=ax,
+                    legend=True,
+                    hue_order=[labels[k] for k in ["mcs", "deterministic", "generational", "topological"]],
+                    order=[labels[k] for k in ["mcs", "deterministic", "generational", "topological"]],
+                    # order=[k for k in ["sim", "real"]]
+                    )
+
+        # Set legend & axis labels
+        ax.set_ylim(*CONFIGS["ylim_final"])
+        ax.set_xlabel('method')
+        # ax.set_yscale("log")
+        ax.set_ylabel("distance (cm)")
+        # ax.legend(handles=None, ncol=1, loc='best', fancybox=True, shadow=True)
 
     import wandb
     api = wandb.Api()
@@ -195,14 +373,16 @@ if __name__ == "__main__":
     # Speed plot
     d = df_speed.copy()
     d["supergraph_type"] = d["speed/supergraph_type"].map(labels)
-    d = d[d["job_type"] != "deterministic"]
+    # Applying the condition to change 'supergraph_type' where 'job_type' is 'deterministic'
+    d = d[(d["job_type"] != "deterministic") | ((d["job_type"] == "deterministic") & (d["supergraph_type"] == "mcs"))]
+    d.loc[d["job_type"] == "deterministic", "supergraph_type"] = 'deterministic'
     d["job_type"] = d["job_type"].map(labels)
 
     # remove speed/supergraph_type column
     d = d.drop(columns=["speed/supergraph_type"])
 
     # Group by relevant columns and compute the mean
-    d = d.groupby(["supergraph_type", "seed", "job_type"]).agg({
+    d = d.groupby(["supergraph_type", "job_type"]).agg({
         "speed/fps": 'mean',
         "supergraph/efficiency_percentage": 'mean'
     }).reset_index()
@@ -211,7 +391,7 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
     plots_pendulum["speed"] = (fig, ax)
     sns.scatterplot(x="supergraph/efficiency_percentage", y="speed/fps", hue="supergraph_type", palette=fcolor, ax=ax, data=d, legend=True,
-                    hue_order=[labels[k] for k in ["mcs", "generational", "topological"]])
+                    hue_order=[labels[k] for k in ["mcs", "generational", "topological", "deterministic"]])
 
     # Fit a linear regression model using NumPy
     X = d["supergraph/efficiency_percentage"].values
@@ -225,15 +405,15 @@ if __name__ == "__main__":
     # ax.plot(Xh, y_line, label='lin', color='black', linestyle='--', linewidth=plt.rcParams['lines.linewidth']*0.8)
 
     # Set legend & axis labels
-    ax.set_ylim(1e6, 4e6)
-    ax.set_yticks([1e6, 2e6, 3e6, 4e6])
+    ax.set_ylim(0e6, 6e6)
+    ax.set_yticks([2e6, 4e6, 6e6])
     ax.set_xlim(0, 100)
     ax.set_xlabel('efficiency (%)')
     ax.set_ylabel("speed (fps)")
     # Place the legend on the right outside of the figure
     ax.legend(handles=ax.get_legend_handles_labels()[0], labels=ax.get_legend_handles_labels()[1],
               # ncol=1, loc='best', bbox_to_anchor=(1, 1), fancybox=True, shadow=True)
-              ncol=1, loc='lower right', fancybox=True, shadow=True)
+              ncol=4, loc='lower right', fancybox=True, shadow=True, bbox_to_anchor=(2, 2))
 
     # Eval plot
     d = df_eval.copy()
@@ -277,7 +457,6 @@ if __name__ == "__main__":
     # Function to interpolate 'transient/t_elapsed' for each group
     def interpolate_group(group):
         return np.interp(common_steps, group['train/total_timesteps'], group['train/ep_rew_mean'])
-
 
     # Apply the interpolation
     d_interpolated = d_grouped.apply(interpolate_group)
@@ -505,8 +684,8 @@ if __name__ == "__main__":
                      (df["topology_type"] == "unidirectional-ring"),
         # "backtrack": ((df["group"] == "backtrack-evaluation-2023-07-03-1622")) &
         "backtrack": ((df["group"] == "default-32-evaluation-2023-08-08-1631") | (df["group"] == "backtrack-32-0.1-evaluation-2023-08-10-0829")) &
-                      (df["combination_mode"] == "linear") &
-                      (df["sort_mode"] != "optimal")
+                     (df["combination_mode"] == "linear") &
+                     (df["sort_mode"] != "optimal")
     }
     plots_ablation_efficiency = {"combination_mode": None, "sort_mode": None, "backtrack": None}
     plots_ablation_time = {"combination_mode": None, "sort_mode": None, "backtrack": None}
@@ -694,7 +873,16 @@ if __name__ == "__main__":
     # Save plots
     fig, ax = plot_computational_complexity
     fig.savefig(f"{PAPER_DIR}/computational_complexity{VERSION_ID}.pdf", bbox_inches='tight')
+    for exp_type, plots_box in all_plots_box.items():
+        for box_type, (fig, ax) in plots_box.items():
+            fig.savefig(f"{PAPER_DIR}/box_{exp_type}_{box_type}{VERSION_ID}_legend{VERSION_ID}.pdf", bbox_inches=export_legend(fig, ax.get_legend()))
+            ax.get_legend().remove()
+            fig.savefig(f"{PAPER_DIR}/box_{exp_type}_{box_type}{VERSION_ID}.pdf", bbox_inches='tight')
+            if MUST_BREAK:
+                break
     for pendulum_type, (fig, ax) in plots_pendulum.items():
+        fig.savefig(f"{PAPER_DIR}/pendulum_{pendulum_type}{VERSION_ID}_legend{VERSION_ID}.pdf", bbox_inches=export_legend(fig, ax.get_legend()))
+        ax.get_legend().remove()
         fig.savefig(f"{PAPER_DIR}/pendulum_{pendulum_type}{VERSION_ID}.pdf", bbox_inches='tight')
         if MUST_BREAK:
             break

@@ -45,11 +45,8 @@ if __name__ == '__main__':
 	# with open("Gs.pkl", "rb") as f:
 	# 	Gs = pickle.load(f)
 
-	# Define initial supergraph
-	S_init, _ = sg.as_supergraph(Gs[0], leaf_kind=LEAF_KIND, sort=[f"{LEAF_KIND}_0"])
-
 	# Grow supergraph
-	S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph(Gs, S_init, LEAF_KIND,
+	S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph(Gs, LEAF_KIND,
 	                                                        combination_mode=COMBINATION_MODE,
 	                                                        backtrack=BACKTRACK,
 	                                                        sort_fn=SORT_FN,

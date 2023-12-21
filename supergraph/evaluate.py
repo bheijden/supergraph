@@ -8,7 +8,7 @@ from math import ceil
 
 import networkx as nx
 
-from supergraph import open_colors as oc, as_supergraph
+from supergraph import open_colors as oc, as_topological_supergraph
 
 edge_data = {"color": oc.ecolor.used, "linestyle": "-", "alpha": 1.0}
 pruned_edge_data = {"color": oc.ecolor.pruned, "linestyle": "--", "alpha": 0.5}
@@ -25,6 +25,7 @@ def plot_graph(
     arrowsize=10,
     arrowstyle="->",
     connectionstyle="arc3,rad=0.1",
+    draw_labels=True,
 ):
     import matplotlib.pyplot as plt
 
@@ -71,7 +72,8 @@ def plot_graph(
         width=edge_linewidth,
         node_size=node_size,
     )
-    nx.draw_networkx_labels(_G, pos, node_labels, ax=ax, font_size=node_fontsize)
+    if draw_labels:
+        nx.draw_networkx_labels(_G, pos, node_labels, ax=ax, font_size=node_fontsize)
 
     # Set ticks
     # node_order = {data["kind"]: data["position"][1] for n, data in nodes}
@@ -291,7 +293,7 @@ def linear_S_iter(Gs: Union[List[nx.DiGraph], nx.DiGraph]):
             P.add_node(name, **data)
             # Increase slot count
             slots[k] += 1
-        S, monomorphism = as_supergraph(P, sort=sort)
+        S, monomorphism = as_topological_supergraph(P, sort=sort)
 
         yield S, monomorphism
 
@@ -373,11 +375,11 @@ def baselines_S(Gs: Union[nx.DiGraph, List[nx.DiGraph]], leaf_kind, toposorts: L
     #     if (k_prev, leaf_kind) in E_val:
     #         for i_prev in range(largest_nodes):
     #             S_top.add_edge(f"s{k_prev}_{i_prev}", f"s{leaf_kind}_0", **edge_data)
-    S_top, _ = as_supergraph(S_all, sort=sort)
+    S_top, _ = as_topological_supergraph(S_all, sort=sort)
 
     # Create supergraph with only the largest depth
     sort_gen = sort[-(largest_depth + 1) :]
-    S_gen, _ = as_supergraph(S_all.subgraph([n for gen in sort_gen for n in gen]).copy(), sort=sort_gen)
+    S_gen, _ = as_topological_supergraph(S_all.subgraph([n for gen in sort_gen for n in gen]).copy(), sort=sort_gen)
     # S_gen = S_top.subgraph([n for gen in generations[:largest_depth] for n in gen] + generations[-1]).copy()
     return S_top, S_gen
 

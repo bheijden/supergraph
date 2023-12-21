@@ -16,25 +16,9 @@ if __name__ == '__main__':
 	EPISODES = 2
 	LENGTH = 100
 
-	LEAF_KIND = 0
+	LEAF_KIND = "agent"
 	BACKTRACK = 3
 	SORT_FN = None  # supergraph.evaluate.perfect_sort
-
-	# Define graph
-	# fs = [1+i*(MAX_FREQ-1)/(NUM_NODES-1) for i in range(0, NUM_NODES)]
-	fs = [float(i) for i in range(1, NUM_NODES)] + [MAX_FREQ]
-	edges = {(i, (i + 1) % len(fs)) for i in range(len(fs) - 1)}  # Add forward edges
-	edges.update({(i, i) for i in range(len(fs))})  # Stateful edges
-	edges.update({(j, i) for i, j in edges})  # Add all reverse edges
-	# edges.add((len(fs)-1, 0))  # Add one reverse edge
-
-	# Define graph
-	Gs = []
-	for i in range(EPISODES):
-		G = supergraph.evaluate.create_graph(fs, edges, LENGTH, seed=SEED+i, theta=THETA, sigma=SIGMA, progress_bar=True)
-		G = supergraph.evaluate.prune_by_window(G, WINDOW)
-		G = supergraph.evaluate.prune_by_leaf(G, LEAF_KIND)
-		Gs.append(G)
 
 	# Get excalidraw graph
 	G0, G1, G2 = supergraph.paper.get_example_graphs()
@@ -44,8 +28,7 @@ if __name__ == '__main__':
 	S_paper, Ms, Ps = paper.algorithm_1(supervisor="agent", backtrack=BACKTRACK, Gs=Gs, max_topo=1, max_comb=1)
 
 	# Grow supergraph
-	S_init, _ = sg.as_supergraph(Gs[0], leaf_kind=LEAF_KIND, sort=[f"{LEAF_KIND}_0"])  # Define initial supergraph
-	S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph(Gs, S_init, LEAF_KIND,
+	S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph(Gs, LEAF_KIND,
 	                                                        combination_mode=COMBINATION_MODE,
 	                                                        backtrack=BACKTRACK,
 	                                                        sort_fn=SORT_FN,

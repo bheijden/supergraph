@@ -33,15 +33,12 @@ def test_integration():
 		G = supergraph.evaluate.prune_by_leaf(G, LEAF_KIND)
 		Gs.append(G)
 
-	# Define initial supergraph
-	S_init, _ = sg.as_supergraph(Gs[0], leaf_kind=LEAF_KIND, sort=[f"{LEAF_KIND}_0"])
-
 	# Define leafs
 	leafs_G = {n: data for n, data in G.nodes(data=True) if data["kind"] == LEAF_KIND}
 	leafs_G = [k for k in sorted(leafs_G.keys(), key=lambda k: leafs_G[k]["seq"])]
 
 	# Grow supergraph
-	S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph(Gs, S_init, LEAF_KIND,
+	S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph(Gs, LEAF_KIND,
 	                                                        combination_mode=COMBINATION_MODE,
 	                                                        backtrack=BACKTRACK,
 	                                                        sort_fn=SORT_FN,

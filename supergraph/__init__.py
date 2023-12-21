@@ -8,11 +8,71 @@ from collections import deque
 import networkx as nx
 
 
+def _convert_dict(input_dict):
+    # This will hold the list of dictionaries
+    result = []
+
+    for key, value in input_dict.items():
+        # The index is the first item in the tuple
+        index = value[0]
+
+        # If we don't have a dictionary for this index, create one
+        while index >= len(result):
+            result.append({})
+
+        # Add the key-value mapping to the appropriate dictionary
+        result[index][key] = value[1]  # Using value[1] as we want the second item of the tuple
+
+    return result
+
+
 def _is_node_attr_match(motif_node_id: str, host_node_id: str, motif: nx.DiGraph, host: nx.DiGraph):
     return host.nodes[host_node_id]["kind"] == motif.nodes[motif_node_id]["kind"]
 
 
-def as_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, sort_fn: Callable = None):
+def _count_elements(input_list):
+    count_dict = {}
+    for elem in input_list:
+        if elem in count_dict:
+            count_dict[elem] += 1
+        else:
+            count_dict[elem] = 1
+    return count_dict
+
+
+def _generate_coordinates(input_list):
+    count_dict = _count_elements(input_list)
+    coordinates_dict = {}
+
+    for unique_val, count in count_dict.items():
+        coordinates = []
+        if count == 1:
+            coordinates.append(unique_val)
+        else:
+            for i in range(count):
+                coordinate = unique_val - 0.25 + 0.5 * (i / (count - 1))
+                coordinates.append(coordinate)
+        coordinates_dict[unique_val] = coordinates
+
+    return coordinates_dict
+
+
+def format_supergraph(S: nx.DiGraph) -> nx.DiGraph:
+    generations = nx.topological_generations(S)
+    for idx_gen, gen in enumerate(generations):
+        positions = [round(S.nodes[u]["order"]) for u in gen]
+        try:
+            positions = _generate_coordinates(positions)
+        except BaseException:
+            print("Error in generating coordinates. Probably, because the 'kind' is not a number.")
+            raise
+        for idx_layer, u in enumerate(gen):
+            p = positions[S.nodes[u]["order"]].pop(0)
+            S.nodes[u]["position"] = (idx_gen, p)
+    return S
+
+
+def as_topological_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, sort_fn: Callable = None):
     attribute_set = {"kind", "inputs", "order", "edgecolor", "facecolor", "position", "alpha"}
     kinds = {P.nodes[n]["kind"]: data for n, data in P.nodes(data=True)}
     kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
@@ -52,7 +112,8 @@ def as_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, sort_fn: Cal
             monomorphism[n] = name
             # Add node and data
             data = kinds[k].copy()
-            data.update({"seq": s, "generation": i, "position": (i, 0)})
+            order = P.nodes[n]["order"]
+            data.update({"seq": s, "generation": i, "position": (i, order)})
             S.add_node(name, **data)
             # Increase slot count
             slots[k] += 1
@@ -65,6 +126,34 @@ def as_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, sort_fn: Cal
     assert all([S.nodes[g[0]]["generation"] == i_gen for i_gen, g in enumerate(generations)])
     assert leaf_kind is None or S.out_degree[f"s{leaf_kind}_0"] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
     return S, monomorphism
+
+
+def as_compact_supergraph(Gs: List[nx.DiGraph], S_init: nx.DiGraph, S: nx.DiGraph, monomorphisms):
+    # Determine edge data
+    try:
+        edge_attribute_set = {"color", "linestyle", "alpha"}
+        edge_data = {a: d for a, d in next(iter(S.edges(data=True)))[-1].items() if a in edge_attribute_set}
+    except StopIteration:
+        # No edges in S
+        edge_data = dict()
+
+    # Convert monomorphisms to list of dicts
+    monomorphisms = [_convert_dict(m) for m in monomorphisms]
+
+    # Determine set of edges
+    edges = list(S_init.edges())
+    for G, monomorphism in zip(Gs, monomorphisms):
+        for partition in monomorphism:
+            G_sub = G.subgraph(partition.keys())
+            G_relabeled = nx.relabel_nodes(G_sub, partition, copy=True)
+            edges.extend(list(G_relabeled.edges()))
+    edges = set(edges)
+    # Create supergraph with nodes of S
+    S_new = nx.DiGraph()
+    S_new.add_nodes_from(S.nodes(data=True))
+    S_new.add_edges_from(edges, **edge_data)
+    S_new = format_supergraph(S_new)
+    return S_new
 
 
 def emb(G1, G2):
@@ -126,6 +215,7 @@ def generate_linear_set(sequence, include_empty_set: bool = True, include_full_s
 
 
 def evaluate_supergraph(Gs: Union[List[nx.DiGraph], nx.DiGraph], S: nx.DiGraph, progress_bar: bool = False, name: str = None):
+    S, _ = as_topological_supergraph(S)
     Gs = [Gs] if isinstance(Gs, nx.DiGraph) else Gs
 
     # Chain the iterators together
@@ -508,7 +598,7 @@ def grow_supergraph_iter(
             assert nx.is_directed_acyclic_graph(P_unified_with_S), "Should be a DAG."
 
             # Convert P_unified_with_S to S
-            new_S, new_mono = as_supergraph(P_unified_with_S, leaf_kind=leaf_kind, sort_fn=sort_fn)
+            new_S, new_mono = as_topological_supergraph(P_unified_with_S, leaf_kind=leaf_kind, sort_fn=sort_fn)
             assert S.out_degree[list(leafs_S.keys())[0]] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
 
             # Update S and related variables
@@ -548,8 +638,8 @@ def grow_supergraph_iter(
 
 def grow_supergraph(
     Gs: Union[List[nx.DiGraph], nx.DiGraph],
-    S: nx.DiGraph,
     leaf_kind,
+    S_init: nx.DiGraph = None,
     combination_mode: str = "linear",
     backtrack: int = 3,
     sort_fn: Callable = None,
@@ -557,12 +647,16 @@ def grow_supergraph(
     validate: bool = False,
     progress_fn: Callable = None,
 ):
-    S_init_size = len(S)
     Gs = [Gs] if isinstance(Gs, nx.DiGraph) else Gs
     num_Gs = len(Gs)
     leafs_G = [{n: data for n, data in G.nodes(data=True) if data["kind"] == leaf_kind} for G in Gs]
     num_partitions = sum([len(leafs) for leafs in leafs_G])
     num_nodes = sum([len(G) for G in Gs])
+
+    # Get
+    S_init = S_init if S_init is not None else as_topological_supergraph(Gs[0], leaf_kind=leaf_kind, sort=[next(iter(leafs_G[0].keys()))])[0]
+    S_init_size = len(S_init)
+    S = as_topological_supergraph(S_init, leaf_kind=leaf_kind, sort_fn=sort_fn)[0]
 
     # Initialize progress bar
     pbar = tqdm.tqdm(total=num_partitions, desc="Growing supergraph", disable=not progress_bar)
@@ -598,7 +692,6 @@ def grow_supergraph(
             if progress_fn:
                 progress_fn(t_elapsed, Gs_num_partitions, Gs_matched, i_partition, G_monomorphism, G, S)
             if progress_bar:
-
                 size = len(S)
                 supergraph_nodes = size * (i_partition + 1 + sum(Gs_num_partitions))
                 matched_nodes = len(G_monomorphism) + sum(Gs_matched)
@@ -674,6 +767,9 @@ def grow_supergraph(
                 #     plot_graph(axes[0], S)
                 #     plot_graph(axes[1], P)
                 #     plt.show()
+
+    # Format supergraph
+    S = as_compact_supergraph(Gs, S_init, S, Gs_monomorphism_final)
     return S, S_init_to_S_final, Gs_monomorphism_final
 
 

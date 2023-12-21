@@ -27,13 +27,11 @@ if __name__ == '__main__':
 		eval.plot_graph(axes[1], Gs[1])
 		eval.plot_graph(axes[2], Gs[2])
 
-	# Define initial supergraph
-	S_init, _ = sg.as_supergraph(Gs[0], leaf_kind=LEAF_KIND, sort=[f"{LEAF_KIND}_0"])
-
 	# Grow supergraphS
 	Ss = []
+	S_sup = None
 	for G in Gs:
-		S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph([G], S_init, LEAF_KIND,
+		S_sup, _S_init_to_S, _monomorphism = sg.grow_supergraph([G], LEAF_KIND, S_init=S_sup,
 		                                                        combination_mode=COMBINATION_MODE,
 		                                                        backtrack=BACKTRACK,
 		                                                        sort_fn=SORT_FN,
