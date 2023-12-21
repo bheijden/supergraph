@@ -42,6 +42,8 @@ if __name__ == '__main__':
 	S_top, S_gen = supergraph.evaluate.baselines_S(Gs, LEAF_KIND)
 
 	# Evaluate performance
+	# Does equate sg.grow_supergraph efficiency, because an additional partition is added for the last
+	# actuator, which is not an ancestor of any of the leafs.
 	m_sup = sg.evaluate_supergraph(Gs, S_sup, progress_bar=True, name="S_sup")
 	m_lin = sg.evaluate_supergraph(Gs, S_lin, progress_bar=True, name="S_lin")
 	m_gen = sg.evaluate_supergraph(Gs, S_gen, progress_bar=True, name="S_gen")
