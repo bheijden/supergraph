@@ -8,80 +8,8 @@ from math import ceil
 
 import networkx as nx
 
-from supergraph import open_colors as oc, as_topological_supergraph
-
-edge_data = {"color": oc.ecolor.used, "linestyle": "-", "alpha": 1.0}
-pruned_edge_data = {"color": oc.ecolor.pruned, "linestyle": "--", "alpha": 0.5}
-delayed_edge_data = {"color": oc.ecolor.pruned, "linestyle": "-", "alpha": 1.0}
-
-
-def plot_graph(
-    ax,
-    _G,
-    node_size: int = 300,
-    node_fontsize=10,
-    edge_linewidth=2.0,
-    node_linewidth=1.5,
-    arrowsize=10,
-    arrowstyle="->",
-    connectionstyle="arc3,rad=0.1",
-    draw_labels=True,
-):
-    import matplotlib.pyplot as plt
-
-    if ax is None:
-        fig, ax = plt.subplots(nrows=1)
-        fig.set_size_inches(12, 5)
-
-    edges = _G.edges(data=True)
-    nodes = _G.nodes(data=True)
-    # edge_color = [data['color'] for u, v, data in edges]
-    # edge_style = [data['linestyle'] for u, v, data in edges]
-    edge_color = [data.get("color", edge_data["color"]) for u, v, data in edges]
-    edge_alpha = [data.get("alpha", edge_data["alpha"]) for u, v, data in edges]
-    edge_style = [data.get("linestyle", edge_data["linestyle"]) for u, v, data in edges]
-    node_alpha = [data["alpha"] for n, data in nodes]
-    node_ecolor = [data["edgecolor"] for n, data in nodes]
-    node_fcolor = [data["facecolor"] for n, data in nodes]
-    node_labels = {n: data.get("seq", "") for n, data in nodes}
-
-    # Get positions
-    pos = {n: data["position"] for n, data in nodes}
-
-    # Draw graph
-    nx.draw_networkx_nodes(
-        _G,
-        ax=ax,
-        pos=pos,
-        node_color=node_fcolor,
-        alpha=node_alpha,
-        edgecolors=node_ecolor,
-        node_size=node_size,
-        linewidths=node_linewidth,
-    )
-    nx.draw_networkx_edges(
-        _G,
-        ax=ax,
-        pos=pos,
-        edge_color=edge_color,
-        alpha=edge_alpha,
-        style=edge_style,
-        arrowsize=arrowsize,
-        arrowstyle=arrowstyle,
-        connectionstyle=connectionstyle,
-        width=edge_linewidth,
-        node_size=node_size,
-    )
-    if draw_labels:
-        nx.draw_networkx_labels(_G, pos, node_labels, ax=ax, font_size=node_fontsize)
-
-    # Set ticks
-    # node_order = {data["kind"]: data["position"][1] for n, data in nodes}
-    # yticks = list(node_order.values())
-    # ylabels = list(node_order.keys())
-    # ax.set_yticks(yticks, labels=ylabels)
-    # ax.tick_params(left=False, bottom=True, labelleft=True, labelbottom=True)
-    ax.tick_params(left=False, bottom=True, labelleft=False, labelbottom=True)
+from supergraph import open_colors as oc, as_topological_supergraph, plot_graph
+from supergraph import EDGE_DATA as edge_data, PRUNED_EDGE_DATA as pruned_edge_data, DELAYED_EDGE_DATA as delayed_edge_data
 
 
 def ornstein_uhlenbeck_samples(rng, theta, mu, sigma, dt, x0, n):

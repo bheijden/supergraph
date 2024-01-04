@@ -117,7 +117,7 @@ if __name__ == "__main__":
     if MUST_PLOT:
         fig, axes = plt.subplots(nrows=2)
         fig.set_size_inches(12, 15)
-        supergraph.evaluate.plot_graph(axes[0], S)
+        supergraph.plot_graph(S, ax=axes[0])
         plt.show()
 
     # Find S

@@ -7,6 +7,13 @@ from typing import List, Dict, Tuple, Set, Any, Union, Callable
 from collections import deque
 import networkx as nx
 
+from supergraph import open_colors as oc
+
+
+EDGE_DATA = {"color": oc.ecolor.used, "linestyle": "-", "alpha": 1.0}
+PRUNED_EDGE_DATA = {"color": oc.ecolor.pruned, "linestyle": "--", "alpha": 0.5}
+DELAYED_EDGE_DATA = {"color": oc.ecolor.pruned, "linestyle": "-", "alpha": 1.0}
+
 
 def _convert_dict(input_dict):
     # This will hold the list of dictionaries
@@ -69,6 +76,7 @@ def format_supergraph(S: nx.DiGraph) -> nx.DiGraph:
         for idx_layer, u in enumerate(gen):
             p = positions[S.nodes[u]["order"]].pop(0)
             S.nodes[u]["position"] = (idx_gen, p)
+            S.nodes[u]["generation"] = idx_gen
     return S
 
 
@@ -76,7 +84,7 @@ def as_topological_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, 
     attribute_set = {"kind", "inputs", "order", "edgecolor", "facecolor", "position", "alpha"}
     kinds = {P.nodes[n]["kind"]: data for n, data in P.nodes(data=True)}
     kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
-    edge_attribute_set = {"color", "linestyle", "alpha"}
+    edge_attribute_set = EDGE_DATA.keys()
     try:
         edge_data = {a: d for a, d in next(iter(P.edges(data=True)))[-1].items() if a in edge_attribute_set}
     except StopIteration:
@@ -131,7 +139,7 @@ def as_topological_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, 
 def as_compact_supergraph(Gs: List[nx.DiGraph], S_init: nx.DiGraph, S: nx.DiGraph, monomorphisms):
     # Determine edge data
     try:
-        edge_attribute_set = {"color", "linestyle", "alpha"}
+        edge_attribute_set = EDGE_DATA.keys()
         edge_data = {a: d for a, d in next(iter(S.edges(data=True)))[-1].items() if a in edge_attribute_set}
     except StopIteration:
         # No edges in S
@@ -215,7 +223,7 @@ def generate_linear_set(sequence, include_empty_set: bool = True, include_full_s
 
 
 def evaluate_supergraph(Gs: Union[List[nx.DiGraph], nx.DiGraph], S: nx.DiGraph, progress_bar: bool = False, name: str = None):
-    S, _ = as_topological_supergraph(S)
+    # S, _ = as_topological_supergraph(S)  # NOTE: lead to problems with top and gen baselines. Call this function manually if needed.
     Gs = [Gs] if isinstance(Gs, nx.DiGraph) else Gs
 
     # Chain the iterators together
@@ -654,7 +662,11 @@ def grow_supergraph(
     num_nodes = sum([len(G) for G in Gs])
 
     # Get
-    S_init = S_init if S_init is not None else as_topological_supergraph(Gs[0], leaf_kind=leaf_kind, sort=[next(iter(leafs_G[0].keys()))])[0]
+    S_init = (
+        S_init
+        if S_init is not None
+        else as_topological_supergraph(Gs[0], leaf_kind=leaf_kind, sort=[next(iter(leafs_G[0].keys()))])[0]
+    )
     S_init_size = len(S_init)
     S = as_topological_supergraph(S_init, leaf_kind=leaf_kind, sort_fn=sort_fn)[0]
 
@@ -771,6 +783,74 @@ def grow_supergraph(
     # Format supergraph
     S = as_compact_supergraph(Gs, S_init, S, Gs_monomorphism_final)
     return S, S_init_to_S_final, Gs_monomorphism_final
+
+
+def plot_graph(
+    G,
+    node_size: int = 300,
+    node_fontsize=10,
+    edge_linewidth=2.0,
+    node_linewidth=1.5,
+    arrowsize=10,
+    arrowstyle="->",
+    connectionstyle="arc3,rad=0.1",
+    draw_labels=True,
+    ax=None,
+):
+    if ax is None:
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(nrows=1)
+        fig.set_size_inches(12, 5)
+
+    edges = G.edges(data=True)
+    nodes = G.nodes(data=True)
+    edge_color = [data.get("color", EDGE_DATA["color"]) for u, v, data in edges]
+    edge_alpha = [data.get("alpha", EDGE_DATA["alpha"]) for u, v, data in edges]
+    edge_style = [data.get("linestyle", EDGE_DATA["linestyle"]) for u, v, data in edges]
+    node_alpha = [data["alpha"] for n, data in nodes]
+    node_ecolor = [data["edgecolor"] for n, data in nodes]
+    node_fcolor = [data["facecolor"] for n, data in nodes]
+    node_labels = {n: data.get("seq", "") for n, data in nodes}
+
+    # Get positions
+    pos = {n: data["position"] for n, data in nodes}
+
+    # Draw graph
+    nx.draw_networkx_nodes(
+        G,
+        ax=ax,
+        pos=pos,
+        node_color=node_fcolor,
+        alpha=node_alpha,
+        edgecolors=node_ecolor,
+        node_size=node_size,
+        linewidths=node_linewidth,
+    )
+    nx.draw_networkx_edges(
+        G,
+        ax=ax,
+        pos=pos,
+        edge_color=edge_color,
+        alpha=edge_alpha,
+        style=edge_style,
+        arrowsize=arrowsize,
+        arrowstyle=arrowstyle,
+        connectionstyle=connectionstyle,
+        width=edge_linewidth,
+        node_size=node_size,
+    )
+    if draw_labels:
+        nx.draw_networkx_labels(G, pos, node_labels, ax=ax, font_size=node_fontsize)
+
+    # Set ticks
+    # node_order = {data["kind"]: data["position"][1] for n, data in nodes}
+    # yticks = list(node_order.values())
+    # ylabels = list(node_order.keys())
+    # ax.set_yticks(yticks, labels=ylabels)
+    # ax.tick_params(left=False, bottom=True, labelleft=True, labelbottom=True)
+    ax.tick_params(left=False, bottom=True, labelleft=False, labelbottom=True)
+    return ax
 
 
 # def ancestral_partition(G, leaf_kind):

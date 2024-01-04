@@ -23,9 +23,9 @@ if __name__ == '__main__':
 	if MUST_PLOT:
 		fig, axes = plt.subplots(nrows=3)
 		fig.set_size_inches(12, 15)
-		eval.plot_graph(axes[0], Gs[0])
-		eval.plot_graph(axes[1], Gs[1])
-		eval.plot_graph(axes[2], Gs[2])
+		sg.plot_graph(Gs[0], ax=axes[0])
+		sg.plot_graph(Gs[1], ax=axes[1])
+		sg.plot_graph(Gs[2], ax=axes[2])
 
 	# Grow supergraphS
 	Ss = []
@@ -43,8 +43,8 @@ if __name__ == '__main__':
 	if MUST_PLOT:
 		fig, axes = plt.subplots(nrows=3)
 		fig.set_size_inches(12, 15)
-		eval.plot_graph(axes[0], Ss[0])
-		eval.plot_graph(axes[1], Ss[1])
-		eval.plot_graph(axes[2], Ss[2])
+		sg.plot_graph(Ss[0], ax=axes[0])
+		sg.plot_graph(Ss[1], ax=axes[1])
+		sg.plot_graph(Ss[2], ax=axes[2])
 		plt.show()
 

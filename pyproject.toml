@@ -1,12 +1,13 @@
 [tool.poetry]
 name = "supergraph"
-version = "0.0.4"
+version = "0.0.6"
 license = "Apache2.0"
-description = "Supergraph compiler."
-authors = ["Bas van der Heijden <d.s.vanderheijden@tudelft.nl>"]
-homepage = "https://github.com/bheijden/supergraph"
-repository = "https://github.com/bheijden/supergraph"
-documentation = "https://github.com/bheijden/supergraph"
+description = "Supergraph compiler"
+authors = ["bheijden  <b.heijden@hotmail.com>"]
+#authors = ["Bas van der Heijden <d.s.vanderheijden@tudelft.nl>"]
+#homepage = "https://github.com/bheijden/supergraph"
+#repository = "https://github.com/bheijden/supergraph"
+#documentation = "https://github.com/bheijden/supergraph"
 
 [tool.poetry.dependencies]
 python = "^3.8"
@@ -31,8 +32,8 @@ ipywidgets = { version = "^8.0.7", optional = true }
 #ipywidgets = "^8.0.7"
 
 [tool.poetry.extras]
-#paper = ["wandb", "matplotlib", "seaborn"]
-paper = ["wandb", "matplotlib", "jupyter", "jupyterlab", "ipywidgets", "dill", "pandas"]
+paper = ["matplotlib", "seaborn"]
+experiments = ["wandb", "matplotlib", "jupyter", "jupyterlab", "ipywidgets", "dill", "pandas"]
 
 [tool.poetry.dev-dependencies]
 black = "^22.1.0"
