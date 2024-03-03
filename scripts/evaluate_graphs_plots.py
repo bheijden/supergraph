@@ -207,7 +207,7 @@ if __name__ == "__main__":
         plots_box["speed"] = (fig, ax)
         sns.scatterplot(x="supergraph/efficiency_percentage", y="speed/fps", hue="supergraph_type", palette=fcolor, ax=ax,
                         data=df_speed, legend=True,
-                        hue_order=[labels[k] for k in ["mcs", "generational", "topological", "deterministic"]])
+                        hue_order=[labels[k] for k in ["deterministic", "mcs", "generational", "topological"]])
 
         # Filter out rows where 'supergraph_type' is 'deterministic'
         filtered_df = df_speed[df_speed["supergraph_type"] != "deterministic"]
@@ -391,7 +391,7 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=thirdwidth_figsize)
     plots_pendulum["speed"] = (fig, ax)
     sns.scatterplot(x="supergraph/efficiency_percentage", y="speed/fps", hue="supergraph_type", palette=fcolor, ax=ax, data=d, legend=True,
-                    hue_order=[labels[k] for k in ["mcs", "generational", "topological", "deterministic"]])
+                    hue_order=[labels[k] for k in ["deterministic", "mcs", "generational", "topological"]])
 
     # Fit a linear regression model using NumPy
     X = d["supergraph/efficiency_percentage"].values
