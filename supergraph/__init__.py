@@ -429,7 +429,7 @@ def grow_supergraph_iter(
     # generations_S = list(nx.topological_generations(S.subgraph(set(S.nodes()) - {leaf_S})))
     S_sub = _subgraph(S, set(S.nodes()) - {leaf_S})
     generations_S = list(nx.topological_generations(S_sub))
-    new_unused_S = {}
+    unused_S = {}
 
     # Use first generation of motif as the initial front (i.e. nodes with in_degree=0)
     next_front = {n for n in G if G.in_degree(n) == 0}
@@ -490,8 +490,8 @@ def grow_supergraph_iter(
 
             # Remove newly added node if it is used in a monomorphism
             for k, v in monomorphism.items():
-                if v in new_unused_S:
-                    new_unused_S.remove(v)
+                if v in unused_S:
+                    unused_S.remove(v)
 
             # Add matched nodes to G_monomorphism
             i_monomorphism = {k: (i_partition, v) for k, v in monomorphism.items()}
@@ -507,25 +507,24 @@ def grow_supergraph_iter(
             # Only yield if we have matched a new partition
             if i_backtrack == 0:
                 # If there are any newly added nodes to S that are unused, filter them out and updatee S
-                # todo: TURN ON AGAIN
-                if len(new_unused_S) > 0:
+                if len(unused_S) > 0:
                     # Remove unused nodes from S
                     topo_sort = list(nx.topological_sort(S))
-                    [topo_sort.remove(s) for s in new_unused_S]
-                    filter_S = _subgraph(S, set(S.nodes()) - new_unused_S).copy()
+                    [topo_sort.remove(s) for s in unused_S]
+                    filter_S = _subgraph(S, set(S.nodes()) - unused_S).copy()
 
                     # Convert filter_S to new_S
                     new_S, new_mono = as_topological_supergraph(filter_S, leaf_kind=leaf_kind, sort=topo_sort)
-                    assert S.out_degree[leaf_S] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
+                    assert new_S.out_degree[leaf_S] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
 
                     # Update S and related variables
-                    new_unused_S = {}
-                    S_to_new_S = {node_p: node_S for node_p, node_S in new_mono.items() if node_p in S.nodes}
+                    S_to_new_S = {node_p: node_S for node_p, node_S in new_mono.items() if node_p in filter_S.nodes}
                     S_init_to_S = {node_S_init: new_mono[node_S] for node_S_init, node_S in S_init_to_S.items()}
                     S = new_S
                     num_nodes_S = len(S) - 1  # Excluding the leaf node
                     S_sub = _subgraph(S, set(S.nodes()) - {leaf_S})
                     generations_S = list(nx.topological_generations(S_sub))
+                    unused_S = {}
 
                     # Update G_monomorphism from S to new_S
                     G_monomorphism = {node_G: (i, S_to_new_S[node_S]) for node_G, (i, node_S) in G_monomorphism.items()}
@@ -671,9 +670,11 @@ def grow_supergraph_iter(
             assert S.out_degree[leaf_S] == 0, f"Leaf node of kind {leaf_kind} in S has out_degree > 0"
 
             # Update S and related variables
-            new_unused_S = {n for n, data in new_S.nodes(data=True) if n not in S.nodes}
+            unused_S = {v for k, v in new_mono.items() if k not in S.nodes}
             S_to_new_S = {node_p: node_S for node_p, node_S in new_mono.items() if node_p in S.nodes}
             S_init_to_S = {node_S_init: new_mono[node_S] for node_S_init, node_S in S_init_to_S.items()}
+            assert len(unused_S.intersection(set(S_to_new_S.values()))) == 0, "unused_S in S_to_new_S"
+            assert len(unused_S.intersection(set(S_init_to_S.values()))) == 0, "unused_S in S_init_to_S"
             S = new_S
             num_nodes_S = len(S) - 1  # Excluding the leaf node
             S_sub = _subgraph(S, set(S.nodes()) - {leaf_S})
@@ -844,9 +845,13 @@ def grow_supergraph(
     # Format supergraph
     S = as_compact_supergraph(Gs, S_init, S, Gs_monomorphism_final)
 
+    # Todo: REMOVE
+    S_filtered, S_final_to_S_filtered = S, {k: k for k in S}
+    S_init_to_S_filtered = S_init_to_S_final
+
     # Contract nodes of the same kind that are situated in the same topological generation
-    S_filtered, S_final_to_S_filtered = filter_supergraph(S, leaf_kind=leaf_kind)
-    S_init_to_S_filtered = {u: S_final_to_S_filtered[v] for u, v in S_init_to_S_final.items()}
+    # S_filtered, S_final_to_S_filtered = filter_supergraph(S, leaf_kind=leaf_kind)
+    # S_init_to_S_filtered = {u: S_final_to_S_filtered[v] for u, v in S_init_to_S_final.items()}
 
     if progress_bar:
         pre_filtered_size = len(S)
@@ -862,7 +867,7 @@ def grow_supergraph(
 
     # Map monomorphism to filtered S
     Gs_monomorphism_filtered = []
-    for i_G, G_monomorphism in enumerate(Gs_monomorphism):
+    for i_G, G_monomorphism in enumerate(Gs_monomorphism_final):
         G_monomorphism_filtered = {n: (i, S_final_to_S_filtered[v]) for n, (i, v) in G_monomorphism.items()}
         Gs_monomorphism_filtered.append(G_monomorphism_filtered)
 
@@ -877,7 +882,21 @@ def grow_supergraph(
                 # P = Gs[i_G].subgraph(partition.keys())
                 P = _subgraph(Gs[i_G], partition.keys())
                 is_mono = check_order(S_filtered, P, partition)
-                assert is_mono, "Remapped monomorphism is not valid with respect to the order of the supergraph"
+                try:
+                    assert is_mono, "Remapped monomorphism is not valid with respect to the order of the supergraph"
+                except AssertionError:
+                    # import matplotlib.pyplot as plt
+                    # generations = list(nx.topological_generations(S_filtered))
+                    # edges = [
+                    #     (f'{motif_u} -> {motif_v}', f'{partition[motif_u]} -> {partition[motif_v]}', f'{S_filtered.nodes[partition[motif_u]]["generation"]} < {S_filtered.nodes[partition[motif_v]]["generation"]}',
+                    #      _is_mono)  # todo: only check depth.
+                    #     for motif_u, motif_v in P.edges
+                    #     if motif_u in partition and motif_v in partition  # If both nodes are in the partition (always the case?
+                    #     and not (_is_mono:= S_filtered.nodes[partition[motif_u]]["generation"] < S_filtered.nodes[partition[motif_v]]["generation"])
+                    # ]
+                    # print("DEBUG __init__.py")
+                    raise
+
 
     return S_filtered, S_init_to_S_filtered, Gs_monomorphism_filtered
 

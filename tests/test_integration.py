@@ -70,3 +70,8 @@ def test_paper_integration():
 	# IMPORTANT! paper.algorithm_1(...) is optimized for readability, instead of speed.
 	# Use supergraph.grow_supergraph(...) instead if speed is important.
 	S, Ms, Ps = paper.algorithm_1(supervisor="agent", backtrack=3, Gs=Gs, max_topo=1, max_comb=1)
+
+
+if __name__ == "__main__":
+	test_integration()
+	test_paper_integration()
