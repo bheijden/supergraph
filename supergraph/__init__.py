@@ -897,7 +897,6 @@ def grow_supergraph(
                     # print("DEBUG __init__.py")
                     raise
 
-
     return S_filtered, S_init_to_S_filtered, Gs_monomorphism_filtered
 
 
