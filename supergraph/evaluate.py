@@ -1,3 +1,4 @@
+import time
 from tqdm import tqdm
 import itertools
 from functools import partial
@@ -67,6 +68,7 @@ def create_graph(
             (lambda n, f=f: (1 + ornstein_uhlenbeck_samples(rng=rng, theta=theta, mu=0, sigma=sigma, dt=1, x0=0, n=n)) / f)
             for f in fs
         ]
+        # fn_dt[-1] = (lambda n, f=fs[-1]: ornstein_uhlenbeck_samples(rng=rng, theta=0., mu=0, sigma=0., dt=1, x0=0, n=n)/f)
     else:
         raise ValueError(f"Unknown scaling mode {scaling_mode}")
     # Scaling theta and sigma with dt
@@ -140,9 +142,9 @@ def create_graph(
                     data_target = G.nodes[id_tar]
                     _seq = data_target["seq"]
                     if o < i:
-                        must_connect = data_target["ts"] >= data_source["ts"]
+                        must_connect = data_target["ts"] >= data_source["ts"] + 1 / fs[o]
                     else:  # To break cycles
-                        must_connect = data_target["ts"] > data_source["ts"]
+                        must_connect = data_target["ts"] > data_source["ts"] + 1 / fs[o]
                     if must_connect:
                         data = {}
                         if with_attributes:
@@ -239,6 +241,13 @@ def baselines_S(Gs: Union[nx.DiGraph, List[nx.DiGraph]], leaf_kind, toposorts: L
     kinds = {Gs[0].nodes[n]["kind"]: data for n, data in Gs[0].nodes(data=True)}
     kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
 
+    # Determine set of feasible edges
+    feasible_edges = set()
+    for G in Gs:
+        edges = G.edges()
+        set_edges = set({(G.nodes[u]["kind"], G.nodes[v]["kind"]) for u, v in edges})
+        feasible_edges.update(set_edges)
+
     # Determine partitions
     largest_nodes = 0
     largest_depth = 0
@@ -309,6 +318,15 @@ def baselines_S(Gs: Union[nx.DiGraph, List[nx.DiGraph]], leaf_kind, toposorts: L
     sort_gen = sort[-(largest_depth + 1) :]
     S_gen, _ = as_topological_supergraph(S_all.subgraph([n for gen in sort_gen for n in gen]).copy(), sort=sort_gen)
     # S_gen = S_top.subgraph([n for gen in generations[:largest_depth] for n in gen] + generations[-1]).copy()
+
+    # Filter edges of S_gen and S_top based on feasible edges
+    for S in [S_top, S_gen]:
+        for u, v in list(S.edges()):
+            kind_u = S.nodes[u]["kind"]
+            kind_v = S.nodes[v]["kind"]
+            if (kind_u, kind_v) not in feasible_edges:
+                S.remove_edge(u, v)
+
     return S_top, S_gen
 
     # # Set positions of nodes
@@ -400,8 +418,10 @@ def from_numpy(edges: np.ndarray, ts: np.ndarray = None) -> nx.DiGraph:
         G.add_edge(u, v)
         G.nodes[u]["kind"] = u_kind
         G.nodes[u]["seq"] = u_seq
+        G.nodes[u]["order"] = int(u_kind)
         G.nodes[v]["kind"] = v_kind
         G.nodes[v]["seq"] = v_seq
+        G.nodes[v]["order"] = int(v_kind)
 
     # Add timestamps
     if ts is not None:
@@ -510,3 +530,24 @@ def to_rex(G: nx.DiGraph, edges: Set[Tuple[int, int]] = None, window: int = 1) -
     # prune to window=x
     # add inputs={kind_name: {input_name: kind_name, window: 1}} to node_data
     # add stateful and pruned to edge_data
+
+
+class timer:
+    def __init__(self, name: str = None, repeat: int = 1, verbose: bool = True):
+        self.name = name or "timer"
+        self.repeat = repeat
+        self.duration = None
+        self.verbose = verbose
+        self.msg = "No message."
+
+    def __enter__(self):
+        self.tstart = time.perf_counter()
+
+    def __exit__(self, type, value, traceback):
+        self.duration = time.perf_counter() - self.tstart
+        if self.repeat == 1:
+            self.msg = f"{self.name} | Elapsed: {self.duration:.4f} sec"
+        else:
+            self.msg = f"{self.name} | Elapsed: {self.duration / self.repeat:.4f} sec (x{self.repeat} repeats = {self.duration:.4f} sec)"
+        if self.verbose:
+            print(self.msg)

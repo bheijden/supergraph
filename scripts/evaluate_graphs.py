@@ -11,35 +11,35 @@ import os
 import yaml
 import datetime
 
-# Graph inputs
-TOPOLOGY_TYPE = ["unidirectional-ring", "bidirectional-ring", "unirandom-ring"]
-FREQUENCY_TYPE = ["linear"]
+# TOPOLOGY_TYPE = ["unirandom-ring", "bidirectional-ring", "unidirectional-ring"]
+TOPOLOGY_TYPE = ["v2v-platooning", "uav-swarm-control"]
+FREQUENCY_TYPE = [20]  # "linear", "proportional", or a fixed number
 MAX_FREQ = [200]
-WINDOW = [0]
+WINDOW = [1]
 LEAF_KIND = [0]
-EPISODES = [20]
-LENGTH = [100]
-NUM_NODES = [32]  # [2, 4, 8, 16, 32]  # , 64]
-SIGMA = [0.1]  # [0, 0.1, 0.2, 0.3]
+EPISODES = [10]
+LENGTH = [10]
+NUM_NODES = [2, 4, 8, 16, 32, 64]  # todo: generate graphs for 2 nodes # [2, 4, 8, 16, 32, 64]  # , 64]
+SIGMA = [0., 0.1, 0.2, 0.3]  # [0, 0.1, 0.2, 0.3]  # [0, 0.1, 0.2, 0.3]
 THETA = [0.07]
 SCALING_MODE = ["after_generation"]
 SEED = [0, 1, 2, 3, 4]
 
 # Algorithm inputs
-SUPERGRAPH_TYPE = ["mcs"]# , "topological", "generational", "sequential"]
+SUPERGRAPH_TYPE = ["mcs", "topological", "generational"]#, "sequential"]
 COMBINATION_MODE = ["linear"] #, power]
 SORT_MODE = ["arbitrary"]#, "optimal"]
-BACKTRACK = [0, 10, 15, 20]
+BACKTRACK = [20]  # [0, 10, 15, 20]
 
 # Logging inputs
-MUST_LOG = False
-MULTIPROCESSING = True
-WORKERS = 6
+MUST_LOG = True  # todo:
+MULTIPROCESSING = True  # todo:
+WORKERS = 12
 os.environ["WANDB_SILENT"] = "true"
 DATA_DIR = "/home/r2ci/supergraph/data"
 PROJECT = "supergraph"
 SYNC_MODE = "offline"
-GROUP = f"backtrack-32-0.1-evaluation-{datetime.datetime.today().strftime('%Y-%m-%d-%H%M')}" # todo: adjust name
+GROUP = f"cps-all-noablation-evaluation-{datetime.datetime.today().strftime('%Y-%m-%d-%H%M')}"  # todo: adjust name
 
 
 def progress_fn(run, Gs_num_nodes, t_final, t_elapsed, Gs_num_partitions, Gs_matched, i_partition, G_monomorphism, G, S):

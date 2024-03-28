@@ -1,3 +1,4 @@
+import itertools
 from typing import Dict, Tuple
 
 EDGE_INDEX = 9
@@ -22,6 +23,26 @@ CWHEEL = {
     "yellow": ["#fff9db", "#fff3bf", "#ffec99", "#ffe066", "#ffd43b", "#fcc419", "#fab005", "#f59f00", "#f08c00", "#e67700"],
     "orange": ["#fff4e6", "#ffe8cc", "#ffd8a8", "#ffc078", "#ffa94d", "#ff922b", "#fd7e14", "#f76707", "#e8590c", "#d9480f"],
 }
+COLORS = list(
+    [
+        "white",
+        "black",
+        "gray",
+        "red",
+        "pink",
+        "grape",
+        "violet",
+        "indigo",
+        "blue",
+        "cyan",
+        "teal",
+        "green",
+        "lime",
+        "yellow",
+        "orange",
+    ]
+)
+COLORS_CYCLE = itertools.cycle([c for c in COLORS if c not in ["black", "white", "red"]])
 
 
 class AttrDict(dict):
@@ -53,6 +74,11 @@ def cscheme_fn(cscheme: Dict[str, str], edge_index=EDGE_INDEX, face_index=FACE_I
         edge_colors[name] = ecolor_fn(color, index=edge_index)
         face_colors[name] = fcolor_fn(color, index=face_index)
     return edge_colors, face_colors
+
+
+def get_color_cycle(exclude=None):
+    exclude = exclude if exclude is not None else ["black", "white", "red"]
+    return itertools.cycle([c for c in COLORS if c not in exclude])
 
 
 # Determine default color scheme
@@ -88,6 +114,4 @@ class _Cwheel:
 
 
 ewheel = _Cwheel("edge")
-ewheel["blue"]
 fwheel = _Cwheel("face")
-fwheel["blue"]

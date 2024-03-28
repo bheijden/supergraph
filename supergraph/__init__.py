@@ -1,10 +1,11 @@
-__version__ = "0.0.4"
+__version__ = "0.0.8"
 
 import itertools
 import tqdm
 import time
 from typing import List, Dict, Tuple, Set, Any, Union, Callable
 from collections import deque
+from copy import deepcopy
 import networkx as nx
 
 from supergraph import open_colors as oc
@@ -13,6 +14,63 @@ from supergraph import open_colors as oc
 EDGE_DATA = {"color": oc.ecolor.used, "linestyle": "-", "alpha": 1.0}
 PRUNED_EDGE_DATA = {"color": oc.ecolor.pruned, "linestyle": "--", "alpha": 0.5}
 DELAYED_EDGE_DATA = {"color": oc.ecolor.pruned, "linestyle": "-", "alpha": 1.0}
+
+
+def set_node_order(G: nx.DiGraph, order: Union[List, Dict]):
+    """Set the order of the nodes in the graph."""
+    if isinstance(order, dict):
+        # Get list of keys order by their value
+        order = [k for k, v in sorted(order.items(), key=lambda item: item[1])]
+    assert isinstance(order, list), "Order must be a list."
+    node_data = get_node_data(G)
+    order = order + [k for k in node_data.keys() if k not in order]
+    y = {name: i for i, name in enumerate(order)}
+    for node in G.nodes:
+        d = G.nodes[node]
+        d_update = {}
+        if "position" in d:
+            d_update["position"] = (d["position"][0], y[d["kind"]])
+        else:
+            x = d.get("ts", d["seq"])
+            d_update["position"] = (x, y[d["kind"]])
+        d_update["order"] = y[d["kind"]]
+        G.nodes[node].update(d_update)
+
+
+def get_node_data(G: nx.DiGraph):
+    """Get structural node data from graph."""
+    node_data = {}
+    for node in G.nodes:
+        data = G.nodes[node]
+        if ("pruned" not in data or not data["pruned"]) and data["kind"] not in node_data:
+            node_data[data["kind"]] = {
+                k: val
+                for k, val in data.items()
+                if k in ["kind", "inputs", "stateful", "color", "edgecolor", "facecolor", "alpha", "order"]
+            }
+    return deepcopy(node_data)
+
+
+def set_node_colors(
+    G: nx.DiGraph, cscheme: Dict[Any, str] = None, ecolor: Dict[Any, str] = None, fcolor: Dict[Any, str] = None
+):
+    """Set the colors of the nodes in the graph."""
+    if cscheme is None:
+        assert (ecolor is None) == (fcolor is None)
+        assert ecolor is not None
+        add_color = False
+    else:
+        assert isinstance(cscheme, dict), "Color scheme must be a dict."
+        node_data = get_node_data(G)
+        cscheme = {**{k: "gray" for k in node_data.keys() if k not in cscheme}, **cscheme}
+        add_color = True
+        ecolor, fcolor = oc.cscheme_fn(cscheme)
+    for node in G.nodes:
+        d = G.nodes[node]
+        d_update = {"edgecolor": ecolor[d["kind"]], "facecolor": fcolor[d["kind"]]}
+        if add_color:
+            d_update["color"] = cscheme[d["kind"]]
+        G.nodes[node].update(d_update)
 
 
 def _convert_dict(input_dict):
@@ -64,8 +122,13 @@ def _generate_coordinates(input_list):
     return coordinates_dict
 
 
-def format_supergraph(S: nx.DiGraph) -> nx.DiGraph:
-    generations = nx.topological_generations(S)
+def format_supergraph(S: nx.DiGraph, leaf_kind) -> nx.DiGraph:
+    # Filter generations
+    generations = list(nx.topological_generations(S))
+    # Filter leaf node from generations and add it to the end
+    leaf_slot = [u for u in S if S.nodes[u]["kind"] == leaf_kind][0]
+    generations = [new_gen for gen in generations if len((new_gen := [u for u in gen if S.nodes[u]["kind"] != leaf_kind])) > 0]
+    generations.append([leaf_slot])
     for idx_gen, gen in enumerate(generations):
         positions = [round(S.nodes[u]["order"]) for u in gen]
         try:
@@ -80,10 +143,21 @@ def format_supergraph(S: nx.DiGraph) -> nx.DiGraph:
     return S
 
 
+def topological_generations(S: nx.DiGraph):
+    # This infers the generations from the attribute "generation" of the nodes
+    generations_dict = {}
+    for n, data in S.nodes(data=True):
+        gen = data["generation"]
+        generations_dict[gen] = generations_dict.get(gen, []) + [n]
+    generations = [generations_dict[gen] for gen in sorted(generations_dict.keys())]
+    return generations
+
+
 def as_topological_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, sort_fn: Callable = None):
     attribute_set = {"kind", "inputs", "order", "edgecolor", "facecolor", "position", "alpha"}
     kinds = {P.nodes[n]["kind"]: data for n, data in P.nodes(data=True)}
     kinds = {k: {a: d for a, d in data.items() if a in attribute_set} for k, data in kinds.items()}
+    default_order = {k: i for i, k in enumerate(kinds)}
     edge_attribute_set = EDGE_DATA.keys()
     try:
         edge_data = {a: d for a, d in next(iter(P.edges(data=True)))[-1].items() if a in edge_attribute_set}
@@ -120,8 +194,8 @@ def as_topological_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, 
             monomorphism[n] = name
             # Add node and data
             data = kinds[k].copy()
-            order = P.nodes[n]["order"]
-            data.update({"seq": s, "generation": i, "position": (i, order)})
+            order = P.nodes[n].get("order", default_order[k])
+            data.update({"seq": s, "generation": i, "order": order, "position": (i, order)})
             S.add_node(name, **data)
             # Increase slot count
             slots[k] += 1
@@ -136,7 +210,7 @@ def as_topological_supergraph(P: nx.DiGraph, leaf_kind=None, sort: List = None, 
     return S, monomorphism
 
 
-def as_compact_supergraph(Gs: List[nx.DiGraph], S_init: nx.DiGraph, S: nx.DiGraph, monomorphisms):
+def as_compact_supergraph(Gs: List[nx.DiGraph], S_init: nx.DiGraph, S: nx.DiGraph, monomorphisms, leaf_kind):
     # Determine edge data
     try:
         edge_attribute_set = EDGE_DATA.keys()
@@ -160,7 +234,7 @@ def as_compact_supergraph(Gs: List[nx.DiGraph], S_init: nx.DiGraph, S: nx.DiGrap
     S_new = nx.DiGraph()
     S_new.add_nodes_from(S.nodes(data=True))
     S_new.add_edges_from(edges, **edge_data)
-    S_new = format_supergraph(S_new)
+    S_new = format_supergraph(S_new, leaf_kind)
     return S_new
 
 
@@ -168,7 +242,7 @@ def filter_supergraph(S: nx.DiGraph, leaf_kind) -> Tuple[nx.DiGraph, Dict]:
     has_printed = False
     # Filter nodes of the same kind in the same generation
     S_final_to_S_replaced = {}
-    generations = list(nx.topological_generations(S))
+    generations = topological_generations(S)
     for i, gen in enumerate(generations):
         kinds = {S.nodes[n]["kind"]: [] for n in gen}
         for n in gen:
@@ -177,7 +251,7 @@ def filter_supergraph(S: nx.DiGraph, leaf_kind) -> Tuple[nx.DiGraph, Dict]:
         for kind, slots in kinds.items():
             for i, n in enumerate(slots):
                 if i > 1 and not has_printed:
-                    print(f"WARNING: Multiple nodes of kind {kind} in generation {i}. Only the first one will be used.")
+                    # print(f"WARNING: Multiple nodes of kind {kind} in generation {i}. Only the first one will be used.")
                     has_printed = True
                 S_final_to_S_replaced[n] = slots[0]
 
@@ -190,7 +264,7 @@ def filter_supergraph(S: nx.DiGraph, leaf_kind) -> Tuple[nx.DiGraph, Dict]:
 
     # Filter nodes
     S_filtered = nx.relabel_nodes(S_replaced, S_replaced_to_S_filtered, copy=True)
-    S_filtered = format_supergraph(S_filtered)
+    S_filtered = format_supergraph(S_filtered, leaf_kind)
     S_final_to_S_filtered = {k: S_replaced_to_S_filtered[v] for k, v in S_final_to_S_replaced.items()}
 
     # Homogenize node seq
@@ -268,7 +342,7 @@ def evaluate_supergraph(Gs: Union[List[nx.DiGraph], nx.DiGraph], S: nx.DiGraph, 
     pbar = tqdm.tqdm(total=num_nodes, desc=desc, disable=not progress_bar)
 
     # Get host generations
-    generations_S = list(nx.topological_generations(S))
+    generations_S = topological_generations(S)
 
     Gs_monomorphisms = []
     Gs_units = []
@@ -345,7 +419,7 @@ def match_supergraph_iter(
     delta_matched_in_degree: Dict[Any, int] = None,
 ):
     # Get host generations
-    generations_S = list(nx.topological_generations(S)) if generations_S is None else generations_S
+    generations_S = list(topological_generations(S)) if generations_S is None else generations_S
 
     # Use first generation of motif as the initial front (i.e. nodes with in_degree=0)
     front = [n for n in G if G.in_degree(n) == 0] if front is None else front
@@ -843,15 +917,15 @@ def grow_supergraph(
                 #     plt.show()
 
     # Format supergraph
-    S = as_compact_supergraph(Gs, S_init, S, Gs_monomorphism_final)
+    S = as_compact_supergraph(Gs, S_init, S, Gs_monomorphism_final, leaf_kind)
 
     # Todo: REMOVE
-    S_filtered, S_final_to_S_filtered = S, {k: k for k in S}
-    S_init_to_S_filtered = S_init_to_S_final
+    # S_filtered, S_final_to_S_filtered = S, {k: k for k in S}
+    # S_init_to_S_filtered = S_init_to_S_final
 
     # Contract nodes of the same kind that are situated in the same topological generation
-    # S_filtered, S_final_to_S_filtered = filter_supergraph(S, leaf_kind=leaf_kind)
-    # S_init_to_S_filtered = {u: S_final_to_S_filtered[v] for u, v in S_init_to_S_final.items()}
+    S_filtered, S_final_to_S_filtered = filter_supergraph(S, leaf_kind=leaf_kind)
+    S_init_to_S_filtered = {u: S_final_to_S_filtered[v] for u, v in S_init_to_S_final.items()}
 
     if progress_bar:
         pre_filtered_size = len(S)
@@ -886,7 +960,7 @@ def grow_supergraph(
                     assert is_mono, "Remapped monomorphism is not valid with respect to the order of the supergraph"
                 except AssertionError:
                     # import matplotlib.pyplot as plt
-                    # generations = list(nx.topological_generations(S_filtered))
+                    # generations = list(topological_generations(S_filtered))
                     # edges = [
                     #     (f'{motif_u} -> {motif_v}', f'{partition[motif_u]} -> {partition[motif_v]}', f'{S_filtered.nodes[partition[motif_u]]["generation"]} < {S_filtered.nodes[partition[motif_v]]["generation"]}',
                     #      _is_mono)  # todo: only check depth.
@@ -910,7 +984,9 @@ def plot_graph(
     arrowstyle="->",
     connectionstyle="arc3,rad=0.1",
     draw_labels=True,
+    max_x=None,
     ax=None,
+    label_map: Dict = None,
 ):
     if ax is None:
         import matplotlib.pyplot as plt
@@ -918,18 +994,32 @@ def plot_graph(
         fig, ax = plt.subplots(nrows=1)
         fig.set_size_inches(12, 5)
 
+    x = {n: data.get("ts", data.get("seq", "")) for idx, (n, data) in enumerate(G.nodes(data=True))}
+    # Remove nodes until max_x
+    if max_x is not None:
+        x = {k: v for k, v in x.items() if v <= max_x}
+        G = G.subgraph(x.keys()).copy()
+
     edges = G.edges(data=True)
     nodes = G.nodes(data=True)
     edge_color = [data.get("color", EDGE_DATA["color"]) for u, v, data in edges]
     edge_alpha = [data.get("alpha", EDGE_DATA["alpha"]) for u, v, data in edges]
     edge_style = [data.get("linestyle", EDGE_DATA["linestyle"]) for u, v, data in edges]
-    node_alpha = [data["alpha"] for n, data in nodes]
-    node_ecolor = [data["edgecolor"] for n, data in nodes]
-    node_fcolor = [data["facecolor"] for n, data in nodes]
+    node_alpha = [data.get("alpha", 1.0) for n, data in nodes]
+    node_ecolor = [data.get("edgecolor", "#212529") for n, data in nodes]
+    node_fcolor = [data.get("facecolor", "#868e96") for n, data in nodes]
     node_labels = {n: data.get("seq", "") for n, data in nodes}
 
     # Get positions
-    pos = {n: data["position"] for n, data in nodes}
+    node_order = {data["kind"]: data.get("order", None) for n, data in nodes}
+    orders = []
+    for idx, (k, o) in enumerate(node_order.items()):
+        if o is None:
+            node_order[k] = k if isinstance(k, int) else idx
+        assert node_order[k] not in orders, "Order must be unique"
+        orders.append(node_order[k])
+
+    pos = {n: data.get("position", (x[n], node_order[data["kind"]])) for idx, (n, data) in enumerate(nodes)}
 
     # Draw graph
     nx.draw_networkx_nodes(
@@ -958,13 +1048,22 @@ def plot_graph(
     if draw_labels:
         nx.draw_networkx_labels(G, pos, node_labels, ax=ax, font_size=node_fontsize)
 
+    # Overwrite label_map with dict
+    label_map = label_map or {}
+
+    # Set ticks
+    yticks = list(node_order.values())
+    ylabels = [label_map.get(k, k) for k in node_order.keys()]
+    ax.set_yticks(yticks, labels=ylabels)
+    ax.tick_params(left=False, bottom=True, labelleft=True, labelbottom=True)
+
     # Set ticks
     # node_order = {data["kind"]: data["position"][1] for n, data in nodes}
     # yticks = list(node_order.values())
     # ylabels = list(node_order.keys())
     # ax.set_yticks(yticks, labels=ylabels)
     # ax.tick_params(left=False, bottom=True, labelleft=True, labelbottom=True)
-    ax.tick_params(left=False, bottom=True, labelleft=False, labelbottom=True)
+    # ax.tick_params(left=False, bottom=True, labelleft=False, labelbottom=True)
     return ax
 
 

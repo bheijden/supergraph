@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import supergraph as sg
 import supergraph.evaluate
@@ -13,6 +14,7 @@ import tempfile
 import shutil
 import os
 import yaml
+import supergraph.open_colors as oc
 
 # os.environ["WANDB_SILENT"] = "false"
 
@@ -34,7 +36,7 @@ def generate_episodes(seed, frequency_type, topology_type, theta, sigma, scaling
     name = supergraph.evaluate.to_graph_name(seed, frequency_type, topology_type, theta, sigma, scaling_mode, window, num_nodes, max_freq, episodes, length, leaf_kind)
 
     # If name already exists in DATA_DIR, skip this run
-    if os.path.exists(f"{DATA_DIR}/{name}"):
+    if MUST_LOG and os.path.exists(f"{DATA_DIR}/{name}"):
         print(f"Skipping {name} as it already exists")
         return
 
@@ -72,6 +74,8 @@ def generate_episodes(seed, frequency_type, topology_type, theta, sigma, scaling
         fs = [float(i) for i in range(1, num_nodes)] + [float(max_freq)]
     elif frequency_type == "proportional":
         fs = [float(1 + i * (max_freq - 1) / (num_nodes - 1)) for i in range(0, num_nodes)]
+    elif isinstance(frequency_type, int):
+        fs = [float(frequency_type) for _ in range(1, num_nodes)] + [float(max_freq)]
     else:
         raise ValueError("Frequency type not supported")
 
@@ -99,6 +103,28 @@ def generate_episodes(seed, frequency_type, topology_type, theta, sigma, scaling
                         break
                     else:
                         c += 1
+    elif topology_type == "v2v-platooning":
+        nodes = list(range(num_nodes))
+        simulator = nodes.pop(-1)  # Last node is the simulator
+        # Add bidirectional edges between simulator and all nodes and leader
+        edges.update({(simulator, i) for i in nodes})  # Observations
+        edges.update({(i, simulator) for i in nodes})  # Controls
+        # Add unidirectional edges between leader and all other nodes
+        leader = nodes.pop(0)  # First node is the leader
+        edges.update({(leader, i) for i in nodes})
+        # Add unidirectional edges in ascending order to rest of the nodes
+        for i in range(len(nodes) - 1):
+            edges.add((nodes[i], nodes[i + 1]))
+    elif topology_type == "uav-swarm-control":
+        nodes = list(range(num_nodes))
+        simulator = nodes.pop(-1)  # Last node is the simulator
+        # Add bidirectional edges between simulator and all nodes
+        edges.update({(simulator, i) for i in nodes})  # Observations
+        edges.update({(i, simulator) for i in nodes})  # Controls
+        leader = nodes.pop(0)  # First node is the leader
+        # Add bidirectional edges between leader and all other nodes
+        edges.update({(leader, i) for i in nodes})
+        edges.update({(i, leader) for i in nodes})
     else:
         raise ValueError("Topology type not supported")
 
@@ -110,6 +136,22 @@ def generate_episodes(seed, frequency_type, topology_type, theta, sigma, scaling
         G = sg.evaluate.prune_by_window(G, window)
         G = sg.evaluate.prune_by_leaf(G, leaf_kind)
         # Gs.append(G)
+
+        # ccycle = oc.get_color_cycle()
+        # cscheme = {k: next(ccycle) for k in range(num_nodes)}
+        # sg.set_node_colors(G, cscheme)
+        # sg.plot_graph(G, max_x=0.2)
+        # S_top, S_gen = supergraph.evaluate.baselines_S(G, leaf_kind)
+        # S_sup, _S_init_to_S, m_sup = sg.grow_supergraph(G, leaf_kind,
+        #                                                 combination_mode="linear",
+        #                                                 backtrack=20,
+        #                                                 sort_fn=None,
+        #                                                 progress_fn=None,
+        #                                                 progress_bar=True,
+        #                                                 validate=False)
+        # sg.plot_graph(S_sup)
+        # print(f"S_sup: {len(S_sup)} nodes | {S_gen.number_of_nodes()} nodes | {S_top.number_of_nodes()} nodes")
+        # plt.show()
 
         # Write edges, ts to file
         G_edges, G_ts = supergraph.evaluate.to_numpy(G)
@@ -160,15 +202,16 @@ if __name__ == '__main__':
     wandb.setup()
 
     # Function inputs
-    TOPOLOGY_TYPE = ["unirandom-ring", "bidirectional-ring", "unidirectional-ring"]
-    FREQUENCY_TYPE = ["linear"]
+    # TOPOLOGY_TYPE = ["unirandom-ring", "bidirectional-ring", "unidirectional-ring"]
+    TOPOLOGY_TYPE = ["v2v-platooning", "uav-swarm-control"]
+    FREQUENCY_TYPE = [20]  # "linear", "proportional", or a fixed number
     MAX_FREQ = [200]
-    WINDOW = [0]
+    WINDOW = [1]
     LEAF_KIND = [0]
-    EPISODES = [20]
-    LENGTH = [100]
+    EPISODES = [10]
+    LENGTH = [10]
     NUM_NODES = [2, 4, 8, 16, 32, 64]
-    SIGMA = [0, 0.1, 0.2, 0.3]
+    SIGMA = [0., 0.1, 0.2, 0.3]
     THETA = [0.07]
     SCALING_MODE = ["after_generation"]
     SEED = [0, 1, 2, 3, 4]
@@ -187,9 +230,9 @@ if __name__ == '__main__':
 
     # Call the function for each combination of parameters using multiprocessing
     for params in param_combinations:
-        tst = generate_episodes(*params)
-        update()
-        # pool.apply_async(generate_episodes, args=params, callback=update)
+        # tst = generate_episodes(*params)
+        # update()
+        pool.apply_async(generate_episodes, args=params, callback=update)
 
     # Close and join the pool
     pool.close()
