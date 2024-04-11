@@ -1,10 +1,10 @@
+from typing import Any, Tuple, List, TypeVar, Dict, Union, TYPE_CHECKING, Sequence
 import functools
 import jax
 from jax import numpy as jnp
 from jax.typing import ArrayLike
 import numpy as onp
 from numpy import ma as ma
-from typing import Any, Tuple, List, TypeVar, Dict, Union, TYPE_CHECKING
 from flax import struct
 from flax.core import FrozenDict
 
@@ -370,11 +370,7 @@ class Timings:
         return FrozenDict(buffers)
 
 
-@struct.dataclass
-class Empty:
-    """Empty class."""
 
-    pass
 
 
 @struct.dataclass
@@ -477,7 +473,7 @@ class GraphState:
     :param buffer: The output buffer of the graph. It holds the outputs of nodes during the execution. Input buffers are
                    automatically filled with the outputs of previously executed step calls of other nodes.
     """
-
+    # The number of partitions (excl. supervisor) have run in the current episode.
     step: Union[int, ArrayLike] = struct.field(pytree_node=True, default_factory=lambda: onp.int32(0))
     eps: Union[int, ArrayLike] = struct.field(pytree_node=True, default_factory=lambda: onp.int32(0))
     nodes: FrozenDict[str, StepState] = struct.field(pytree_node=True, default_factory=lambda: None)
@@ -486,6 +482,8 @@ class GraphState:
     timings_eps: Timings = struct.field(pytree_node=True, default_factory=lambda: None)
     # A ring buffer that holds the outputs for every node's output channel.
     buffer: FrozenDict[str, Output] = struct.field(pytree_node=True, default_factory=lambda: None)
+    # Some auxillary data that can be used to store additional information (e.g. wrappers
+    aux: FrozenDict[str, Any] = struct.field(pytree_node=True, default_factory=lambda: FrozenDict({}))
 
     def replace_buffer(self, outputs: Union[Dict[str, Output], FrozenDict[str, Output]]):
         """Replace the buffer with new outputs.
@@ -530,6 +528,14 @@ class GraphState:
         """
         return self.replace(nodes=self.nodes.copy(nodes))
 
+    def replace_aux(self, aux: Union[Dict[str, Any], FrozenDict[str, Any]]):
+        """Replace the auxillary data of the graph.
+
+        :param aux: The new auxillary data.
+        :return: A new GraphState with the updated auxillary data.
+        """
+        return self.replace(aux=self.aux.copy(aux))
+
     def try_get_node(self, node_name: str) -> Union[StepState, None]:
         """Try to get the step state of a node if it exists.
 
@@ -538,5 +544,87 @@ class GraphState:
         """
         return self.nodes.get(node_name, None)
 
+    def try_get_aux(self, aux_name: str) -> Union[Any, None]:
+        """Try to get auxillary data of the graph if it exists.
+
+        :param aux_name: The name of the aux.
+        :return: The aux of the node if it exists, else None.
+        """
+        return self.aux.get(aux_name, None)
+
 
 StepStates = Union[Dict[str, StepState], FrozenDict[str, StepState]]
+
+
+@struct.dataclass
+class Base:
+    """Base functionality extending all dataclasses.
+
+    These methods allow for dataclasses to be operated like arrays/matrices.
+    """
+
+    def __add__(self, o: Any) -> Any:
+        try:
+            # If o is a pytree, element-wise addition
+            return jax.tree_util.tree_map(lambda x, y: x + y, self, o)
+        except ValueError:
+            # If o is a scalar, element-wise addition
+            return jax.tree_util.tree_map(lambda x: x + o, self)
+
+    def __sub__(self, o: Any) -> Any:
+        try:
+            # If o is a pytree, element-wise subtraction
+            return jax.tree_util.tree_map(lambda x, y: x - y, self, o)
+        except ValueError:
+            # If o is a scalar, element-wise subtraction
+            return jax.tree_util.tree_map(lambda x: x - o, self)
+
+    def __mul__(self, o: Any) -> Any:
+        try:
+            # If o is a pytree, element-wise multiplication
+            return jax.tree_util.tree_map(lambda x, y: x * y, self, o)
+        except ValueError:
+            # If o is a scalar, element-wise multiplication
+            return jax.tree_util.tree_map(lambda x: x * o, self)
+
+    def __neg__(self) -> Any:
+        return jax.tree_util.tree_map(lambda x: -x, self)
+
+    def __truediv__(self, o: Any) -> Any:
+        try:
+            # If o is a pytree, element-wise division
+            return jax.tree_util.tree_map(lambda x, y: x / y, self, o)
+        except ValueError:
+            # If o is a scalar, element-wise division
+            return jax.tree_util.tree_map(lambda x: x / o, self)
+
+    def reshape(self, shape: Sequence[int]) -> Any:
+        return jax.tree_util.tree_map(lambda x: x.reshape(shape), self)
+
+    def select(self, o: Any, cond: jax.Array) -> Any:
+        return jax.tree_util.tree_map(lambda x, y: (x.T * cond + y.T * (1 - cond)).T, self, o)
+
+    def slice(self, beg: int, end: int) -> Any:
+        return jax.tree_util.tree_map(lambda x: x[beg:end], self)
+
+    def take(self, i, axis=0) -> Any:
+        return jax.tree_util.tree_map(lambda x: jnp.take(x, i, axis=axis, mode='wrap'), self)
+
+    def concatenate(self, *others: Any, axis: int = 0) -> Any:
+        return jax.tree_util.tree_map(lambda *x: jnp.concatenate(x, axis=axis), self, *others)
+
+    def index_set(
+            self, idx: Union[jax.Array, Sequence[jax.Array]], o: Any
+    ) -> Any:
+        return jax.tree_util.tree_map(lambda x, y: x.at[idx].set(y), self, o)
+
+    def index_sum(
+            self, idx: Union[jax.Array, Sequence[jax.Array]], o: Any
+    ) -> Any:
+        return jax.tree_util.tree_map(lambda x, y: x.at[idx].add(y), self, o)
+
+
+@struct.dataclass
+class Empty(Base):
+    """Empty class."""
+    pass

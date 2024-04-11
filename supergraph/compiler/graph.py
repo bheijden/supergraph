@@ -195,7 +195,7 @@ class Graph:
     def init(
         self,
         rng: jax.typing.ArrayLike = None,
-        step_states: Dict[str, base.StepStates] = None,
+        step_states: Dict[str, base.StepState] = None,
         starting_step: Union[int, jax.typing.ArrayLike] = 0,
         starting_eps: jax.typing.ArrayLike = 0,
         randomize_eps: bool = False,
