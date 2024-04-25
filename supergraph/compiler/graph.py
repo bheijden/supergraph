@@ -219,6 +219,7 @@ class Graph:
         # Determine initial step states
         step_states = step_states if step_states is not None else {}
         step_states = step_states.unfreeze() if isinstance(step_states, FrozenDict) else step_states
+        step_states = {k: v for k, v in step_states.items()}  # Copy step states
 
         if rng is None:
             rng = jax.random.PRNGKey(0)

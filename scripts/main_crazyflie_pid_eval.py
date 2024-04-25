@@ -7,6 +7,8 @@ import numpy as onp
 
 import networkx as nx
 import matplotlib.pyplot as plt
+import seaborn
+seaborn.set()
 from tensorflow_probability.substrates import jax as tfp  # Import tensorflow_probability with jax backend
 
 tfd = tfp.distributions
@@ -21,35 +23,62 @@ import supergraph.compiler.base as base
 from supergraph.compiler.graph import Graph
 
 
+def _plot_results(rollout):
+    ode_state = rollout.nodes["mocap"].inputs["world"][:, -1].data
+    ctrl = rollout.nodes["world"].inputs["attitude"][:, -1].data
+    att = ode_state.att
+    pos = ode_state.pos
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes[0, 0].plot(ctrl.pwm_ref, label="pwm", color="blue", linestyle="--") if ctrl.pwm_ref is not None else None
+    # axes[0, 0].plot(ctrl.z_ref, label="z_ref", color="green", linestyle="--") if ctrl.z_ref is not None else None
+    axes[0, 0].legend()
+    axes[0, 0].set_title("PWM")
+    axes[0, 1].plot(att[:, 0], label="theta", color="blue")
+    axes[0, 1].plot(ctrl.theta_ref, label="theta_ref", color="blue", linestyle="--")
+    axes[0, 1].plot(att[:, 1], label="phi", color="orange")
+    axes[0, 1].plot(ctrl.phi_ref, label="phi_ref", color="orange", linestyle="--")
+    # axes[0, 1].plot(att[:, 2], label="psi", color="green")
+    # axes[0, 1].plot(ctrl.psi_ref, label="psi_ref", color="green", linestyle="--")
+    axes[0, 1].legend()
+    axes[0, 1].set_title("Attitude")
+    axes[0, 2].plot(pos[:, 0], label="x", color="blue")
+    axes[0, 2].plot(pos[:, 1], label="y", color="orange")
+    axes[0, 2].plot(pos[:, 2], label="z", color="green")
+    axes[0, 2].plot(ctrl.z_ref, label="z_ref", color="green", linestyle="--") if ctrl.z_ref is not None else None
+    axes[0, 2].legend()
+    axes[0, 2].set_title("Position")
+
+    # todo: DEBUG
+    # fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    axes[1, 0].set_title("PWM")
+    axes[1, 0].plot(ctrl.pwm_ref, label="pwm")
+    axes[1, 0].plot(ctrl.pwm_unclipped, label="unclipped")
+    axes[1, 0].plot(ctrl.pwm_hover, label="hover")
+    axes[1, 0].legend()
+
+    axes[1, 1].set_title("Force")
+    axes[1, 1].plot(ctrl.force, label="force")
+    axes[1, 1].plot(ctrl.z_force, label="z")
+    axes[1, 1].plot(ctrl.force_hover, label="hover")
+    # axes[1, 1].plot(ctrl.z_force_from_hover, label="z_from_hover")
+    axes[1, 1].legend()
+
+    axes[1, 2].set_title("PID")
+    axes[1, 2].plot(ctrl.proportional, label="P")
+    axes[1, 2].plot(ctrl.integral_unclipped, label="I (unclipped)")
+    axes[1, 2].plot(ctrl.integral, label="I")
+    axes[1, 2].plot(ctrl.derivative, label="D")
+    axes[1, 2].legend()
+    return fig, axes
+
+
 if __name__ == "__main__":
-    # todo: check intrinsic rpy conventions in supergraph.compiler.crazyflie.nodes:
-    #       - rpy_to_R --> wrongfully implemented
-    #       - spherical_to_R --> Check order Ry * Rz or reversed?
-    #       - R_to_rpy -> check.
-    # todo: correct for pos_offset in PID controller?
-    # todo: The pid controller must also be corrected with the platform's position
-    # todo: theta and phi were previously negative. Check the effect of this change on plotting
-    #       - Visualize cf pose & vicon pose, and see difference.
-    # todo: theta seems to be negative w.r.t the reference.
-    #       - Check if giving a reference, it is tracked in the correct direction.
-    #       - Check coordinate system jacob's paper vs crazyflie vs mujoco.
-    # todo: real experiments checklist
-    #       - CF expects roll, pitch, yaw in degrees.
-    #       - Train with variations in yaw --> somehow, azimuth is also rolling the platform...
-    #       - Check what angle conventions (Tait-Bryan or Euler)
-    #           - the KF of the crayzyflie expects?
-    #           - the Mocap system provides (Tait-Bryan)
-    #           - the ODE dynamics provide?
-    #           - Brax uses Tait-Bryan
-    #       - Check tracking offset Vicon vs. simulated Mocap
-    #           - Simulation: [0,0,0] == perfect landing --> pos_offset=[0,0,0]
-    #           - Real: [0,0,0.0193] == real landing --> pos_offset=[0,0,-0.0193]
-    #       - Verify policy's rpy conventions ---> test policy in mujoco to see if it makes sense.
-    #       - Make minimal eagerx implementation for policy evaluation
-    #       - Add yaw controller that fixes yaw to zero in the platform frame.
-    # todo: Truncation in reference tracking policy
-    # todo: Remove DebugAttitudeControllerOutput
+    # todo: why constant offset in z-axis with PID controller?
     # todo: Save best policy
+    # todo: Optionally clip value function
+    # todo: Properly handle truncated episodes (record terminal observation)
+    # todo: Create eval_fn in PPO (e.g., for wandb logging)
 
     # Create nodes
     world = cf.nodes.OdeWorld(name="world", rate=50, color="grape", order=4)
@@ -102,15 +131,7 @@ if __name__ == "__main__":
         graph.run = jax.jit(graph.run)
 
     # RL environment
-    # env = cf.nodes.Environment(graph, order=("sentinel", "world"), randomize_eps=True)
-    env = cf.nodes.InclinedLanding(graph, order=("sentinel", "world"), randomize_eps=True)
-    # gs, obs, info = env.reset(jax.random.PRNGKey(0))
-    # obs_space = env.observation_space(gs)
-    # act_space = env.action_space(gs)
-    # print(f"obs_space: {obs_space.low.shape}, act_space: {act_space.low.shape}")
-    # print(f"obs: {obs}, info: {info}")
-    # gs, obs, reward, terminated, truncated, info = env.step(gs, jnp.zeros(act_space.shape))
-    # print(f"obs: {obs}, reward: {reward}, terminated: {terminated}, truncated: {truncated}, info: {info}")
+    env = cf.nodes.Environment(graph, order=("sentinel", "world"), randomize_eps=True)
 
     # Visualize raw graphs
     MAKE_PLOTS = False
@@ -128,110 +149,83 @@ if __name__ == "__main__":
     if MAKE_PLOTS:
         supergraph.plot_graph(graph.S)
         # plt.show()
-    # plt.show()
 
-    # Initialize PPO config
-    # config = ppo.Config(
-    #     LR=1e-4,
-    #     NUM_ENVS=64,
-    #     NUM_STEPS=128,  # increased from 16 to 32 (to solve approx_kl divergence)
-    #     TOTAL_TIMESTEPS=5e6,
-    #     UPDATE_EPOCHS=32,
-    #     NUM_MINIBATCHES=32,
-    #     GAMMA=0.91,
-    #     GAE_LAMBDA=0.97,
-    #     CLIP_EPS=0.44,
-    #     ENT_COEF=0.01,
-    #     VF_COEF=0.77,
-    #     MAX_GRAD_NORM=0.87,  # or 0.5?
-    #     NUM_HIDDEN_LAYERS=2,
-    #     NUM_HIDDEN_UNITS=64,
-    #     KERNEL_INIT_TYPE="xavier_uniform",
-    #     HIDDEN_ACTIVATION="tanh",
-    #     STATE_INDEPENDENT_STD=True,
-    #     SQUASH=True,
-    #     ANNEAL_LR=False,
-    #     NORMALIZE_ENV=True,
-    #     DEBUG=False,
-    #     VERBOSE=True,
-    #     FIXED_INIT=True,
-    #     OFFSET_STEP=True,
-    #     NUM_EVAL_ENVS=20,
-    #     EVAL_FREQ=20,
-    # )
-    config = cf.ppo.multi_inclination
-    train = functools.partial(ppo.train, env)
-    train = jax.jit(train)
-    with timer("train"):
-        res = train(config, jax.random.PRNGKey(2))
-    print("Training done!")
+    # # Initialize agent params
+    # model_params = res["runner_state"][0].params["params"]
+    # act_scaling = res["act_scaling"]
+    # obs_scaling = res["norm_obs"]
+    # ppo_params = cf.nodes.PPOAgentParams(act_scaling, obs_scaling, model_params, hidden_activation="tanh", stochastic=False)
+    # ss_agent = base.StepState(rng=None, params=ppo_params, state=None)
+    #
+    # # Save agent params
+    # ss_agent_onp = jax.tree_util.tree_map(lambda x: onp.array(x), ss_agent)
+    # with open("main_crazyflie_ss_agent.pkl", "wb") as f:
+    #     pickle.dump(ss_agent_onp, f)
+    # print("Agent params saved!")
 
-    # Initialize agent params
-    model_params = res["runner_state"][0].params["params"]
-    act_scaling = res["act_scaling"]
-    obs_scaling = res["norm_obs"]
-    ppo_params = cf.nodes.PPOAgentParams(act_scaling, obs_scaling, model_params,
-                                         hidden_activation=config.HIDDEN_ACTIVATION, stochastic=False)
-    ss_agent = base.StepState(rng=None, params=ppo_params, state=None)
+    # Load agent params
+    with open("./main_crazyflie_ss_agent.pkl", "rb") as f:
+        ss_agent = pickle.load(f)
 
-    # Save agent params
-    ss_agent_onp = jax.tree_util.tree_map(lambda x: onp.array(x), ss_agent)
-    with open("main_crazyflie_ss_agent.pkl", "wb") as f:
-        pickle.dump(ss_agent_onp, f)
-    print("Agent params saved!")
+    # Rollout
+    def _rollout(_params, _rng: jax.Array = None):
+        if _rng is None:
+            _rng = jax.random.PRNGKey(0)
 
-    # Save PID params
-    gs = graph.init(jax.random.PRNGKey(0), order=("sentinel", "world"), step_states=dict(agent=ss_agent))
-    ss_att_onp = jax.tree_util.tree_map(lambda x: onp.array(x), gs.nodes["attitude"])
-    with open("main_crazyflie_ss_attitude.pkl", "wb") as f:
-        pickle.dump(ss_att_onp, f)
-    print("Attitude params saved!")
+        rng_init, rng_mass, rng_pos = jax.random.split(_rng, 3)
+        gs = graph.init(rng_init, order=("sentinel", "world"), step_states=dict(agent=ss_agent))
+        # Get step_states
+        ss_world = gs.try_get_node("world")
+        ss_pid = gs.try_get_node("attitude")
+        # # Update mass
+        # c = jax.random.uniform(rng_mass, (), minval=-0.15, maxval=0.15)  # Mass perturbation
+        # new_params = ss_world.params.replace(mass=ss_world.params.mass * (1 + c))
+        # z = jax.random.uniform(rng_pos, (), minval=-0., maxval=1.0)  # Initial z-position perturbation
+        # new_pos = ss_world.state.pos.at[-1].set(z)  # Replace z-position
+        # # new_pos = ss_world.state.pos.at[-1].set(0.2)  # Replace z-position
+        # new_state = ss_world.state.replace(pos=new_pos)
+        # ss_world = ss_world.replace(params=new_params, state=new_state)
+        # # Update PID params
+        # new_params = ss_pid.params.replace(kp=_params["kp"], ki=_params["ki"], kd=_params["kd"], max_integral=_params["max_integral"])
+        # ss_pid = ss_pid.replace(params=new_params)
 
-    # Initialize
-    rng = jax.random.PRNGKey(0)
-    gs = graph.init(rng, order=("sentinel", "world"), step_states=dict(agent=ss_agent))
-    rollout = graph.rollout(gs)
+        # Update graphstate &
+        init_gs = gs.replace_nodes({"attitude": ss_pid, "world": ss_world})
+        carry = graph.reset(init_gs)
+
+        # Rollout with scan
+        def _scan(_carry, _):
+            _gs, _ss = _carry
+            action = jnp.zeros(env.action_space(init_gs).shape, dtype=float)
+            output = cf.nodes.AgentOutput(action=action)
+            # _gs, _ss = graph.step(_gs, step_state=_ss, output=output)
+            _gs, _ss = graph.step(_gs)
+            return (_gs, _ss), _gs
+
+        _, graph_states = jax.lax.scan(_scan, carry, jnp.arange(graph.max_steps))
+        # ode_state = graph_states.nodes["mocap"].inputs["world"][:, -1].data
+        # z = ode_state.pos[:, -1]
+        # costs = (z) ** 2
+        # costs = jnp.abs(z)
+        return graph_states
+
+    # Rollout
+    rollout_jit = jax.jit(_rollout)
+    rng = jax.random.PRNGKey(1)
+    _params = dict(
+        kp=1.0,
+        ki=1.0,
+        kd=0.4,
+        max_integral=0.1
+    )
+    rollout = rollout_jit(_params, rng)
+    _plot_results(rollout)
     print("Rollout done!")
-
-    actions = rollout.nodes["attitude"].inputs["agent"][:, -1].data.action
-    ode_state = rollout.nodes["mocap"].inputs["world"][:, -1].data
-    att = ode_state.att
-    pos = ode_state.pos
-
-    # Save attitude
-    with open("main_crazyflie_att.pkl", "wb") as f:
-        pickle.dump(onp.array(att), f)
-    print("Attitude saved!")
-    with open("main_crazyflie_pos.pkl", "wb") as f:
-        pickle.dump(onp.array(pos), f)
-    print("Position saved!")
-
-    ctrl = rollout.nodes["world"].inputs["attitude"][:, -1].data
-
-    import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    axes[0].plot(ctrl.pwm_ref, label="pwm", color="blue", linestyle="--") if ctrl.pwm_ref is not None else None
-    # axes[0].plot(ctrl.z_ref, label="z_ref", color="green", linestyle="--") if ctrl.z_ref is not None else None
-    axes[0].legend()
-    axes[0].set_title("PWM")
-    axes[1].plot(att[:, 0], label="phi", color="orange")
-    axes[1].plot(ctrl.phi_ref, label="phi_ref", color="orange", linestyle="--")
-    axes[1].plot(att[:, 1], label="theta", color="blue")
-    axes[1].plot(ctrl.theta_ref, label="theta_ref", color="blue", linestyle="--")
-    # axes[1].plot(att[:, 2], label="psi", color="green")
-    # axes[1].plot(ctrl.psi_ref, label="psi_ref", color="green", linestyle="--")
-    axes[1].legend()
-    axes[1].set_title("Attitude")
-    axes[2].plot(pos[:, 0], label="x", color="blue")
-    axes[2].plot(pos[:, 1], label="y", color="orange")
-    axes[2].plot(pos[:, 2], label="z", color="green")
-    axes[2].plot(ctrl.z_ref, label="z_ref", color="green", linestyle="--") if ctrl.z_ref is not None else None
-    axes[2].legend()
-    axes[2].set_title("Position")
+    plt.show()
 
     # Html visualization may not work properly, if it's already rendering somewhere else.
     # In such cases, comment-out all but one HTML(pendulum.render(rollout))
-    plt.show()
+
     rollout_json = cf.render(rollout)
     cf.save("./main_crazyflie.html", rollout_json)
     exit()
@@ -307,3 +301,36 @@ if __name__ == "__main__":
         action = gs_rollout.nodes["attitude"].inputs["agent"].data.action[:, :, 0, 0].T
         plt.plot(action)
     plt.show()
+
+
+
+
+
+    # config = ppo.Config(
+    #     LR=5e-5,
+    #     NUM_ENVS=64,
+    #     NUM_STEPS=32,  # increased from 16 to 32 (to solve approx_kl divergence)
+    #     TOTAL_TIMESTEPS=30e6,
+    #     UPDATE_EPOCHS=4,
+    #     NUM_MINIBATCHES=4,
+    #     GAMMA=0.99,
+    #     GAE_LAMBDA=0.95,
+    #     CLIP_EPS=0.2,
+    #     ENT_COEF=0.01,
+    #     VF_COEF=0.5,
+    #     MAX_GRAD_NORM=0.5,  # or 0.5?
+    #     NUM_HIDDEN_LAYERS=2,
+    #     NUM_HIDDEN_UNITS=64,
+    #     KERNEL_INIT_TYPE="xavier_uniform",
+    #     HIDDEN_ACTIVATION="tanh",
+    #     STATE_INDEPENDENT_STD=True,
+    #     SQUASH=True,
+    #     ANNEAL_LR=False,
+    #     NORMALIZE_ENV=True,
+    #     DEBUG=False,
+    #     VERBOSE=True,
+    #     FIXED_INIT=True,
+    #     OFFSET_STEP=True,
+    #     NUM_EVAL_ENVS=20,
+    #     EVAL_FREQ=20,
+    # )

@@ -10,7 +10,7 @@ from flax import struct
 from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
-from supergraph.compiler.rl import Environment, LogWrapper, AutoResetWrapper, VecEnv, NormalizeVecObservation, NormalizeVecReward, Environment, Box, SquashAction
+from supergraph.compiler.rl import Environment, LogWrapper, AutoResetWrapper, VecEnv, NormalizeVecObservation, NormalizeVecReward, Box, SquashAction
 from supergraph.compiler.actor_critic import Actor, Critic, ActorCritic
 # from wrappers import (
 #     LogWrapper,
@@ -373,7 +373,45 @@ def train(env: Environment, config: Config, rng: jax.Array):
             mean_lengths = lengths_done.sum() / total_done
             std_lengths = jnp.sqrt(((lengths_done - mean_lengths)**2 * eval_traj_batch.done).sum() / total_done)
 
+            # todo: move to separate function
+            is_perfect_done = jnp.roll(eval_traj_batch.info["is_perfect"], shift=1, axis=-1) * eval_traj_batch.done
+            pos_perfect_done = jnp.roll(eval_traj_batch.info["pos_perfect"], shift=1, axis=-1) * eval_traj_batch.done
+            att_perfect_done = jnp.roll(eval_traj_batch.info["att_perfect"], shift=1, axis=-1) * eval_traj_batch.done
+            vel_perfect_done = jnp.roll(eval_traj_batch.info["vel_perfect"], shift=1, axis=-1) * eval_traj_batch.done
+            pos_error_done = jnp.roll(eval_traj_batch.info["pos_error"], shift=1, axis=-2) * eval_traj_batch.done
+            att_error_done = jnp.roll(eval_traj_batch.info["att_error"], shift=1, axis=-2) * eval_traj_batch.done
+            vel_error_done = jnp.roll(eval_traj_batch.info["vel_error"], shift=1, axis=-2) * eval_traj_batch.done
+            mean_pos_error = pos_error_done.sum() / total_done
+            mean_att_error = att_error_done.sum() / total_done
+            mean_vel_error = vel_error_done.sum() / total_done
+            mean_is_perfect = is_perfect_done.sum() / total_done
+            mean_pos_perfect = pos_perfect_done.sum() / total_done
+            mean_att_perfect = att_perfect_done.sum() / total_done
+            mean_vel_perfect = vel_perfect_done.sum() / total_done
+            std_pos_error = jnp.sqrt(((pos_error_done - mean_pos_error)**2 * eval_traj_batch.done).sum() / total_done)
+            std_att_error = jnp.sqrt(((att_error_done - mean_att_error)**2 * eval_traj_batch.done).sum() / total_done)
+            std_vel_error = jnp.sqrt(((vel_error_done - mean_vel_error)**2 * eval_traj_batch.done).sum() / total_done)
+            # std_is_perfect = jnp.sqrt(((is_perfect_done - mean_is_perfect)**2 * eval_traj_batch.done).sum() / total_done)
+            # std_pos_perfect = jnp.sqrt(((pos_perfect_done - mean_pos_perfect)**2 * eval_traj_batch.done).sum() / total_done)
+            # std_att_perfect = jnp.sqrt(((att_perfect_done - mean_att_perfect)**2 * eval_traj_batch.done).sum() / total_done)
+            # std_vel_perfect = jnp.sqrt(((vel_perfect_done - mean_vel_perfect)**2 * eval_traj_batch.done).sum() / total_done)
+
             # Update metric
+            # metric["info"] = eval_traj_batch.info # todo: remove this
+            metric["eval/mean_is_perfect"] = mean_is_perfect
+            # metric["eval/std_is_perfect"] = std_is_perfect
+            metric["eval/mean_pos_perfect"] = mean_pos_perfect
+            # metric["eval/std_pos_perfect"] = std_pos_perfect
+            metric["eval/mean_att_perfect"] = mean_att_perfect
+            # metric["eval/std_att_perfect"] = std_att_perfect
+            metric["eval/mean_vel_perfect"] = mean_vel_perfect
+            # metric["eval/std_vel_perfect"] = std_vel_perfect
+            metric["eval/mean_pos_error"] = mean_pos_error
+            metric["eval/std_pos_error"] = std_pos_error
+            metric["eval/mean_att_error"] = mean_att_error
+            metric["eval/std_att_error"] = std_att_error
+            metric["eval/mean_vel_error"] = mean_vel_error
+            metric["eval/std_vel_error"] = std_vel_error
             metric["eval/mean_returns"] = mean_returns
             metric["eval/std_returns"] = std_returns
             metric["eval/mean_lengths"] = mean_lengths
@@ -381,6 +419,28 @@ def train(env: Environment, config: Config, rng: jax.Array):
             metric["eval/total_episodes"] = total_done
 
             def callback(info):
+                # i = info["info"]  # todo: remove this.
+                # for k, v in info.items():
+                #     if "eval" not in k:
+                #         continue
+                #     print(k, v)
+                # is_perfect_done = i["is_perfect"]
+                # pos_perfect_done = i["pos_perfect"]
+                # att_perfect_done = i["att_perfect"]
+                # vel_perfect_done = i["vel_perfect"]
+                # pos_error_done = i["pos_error"]
+                # att_error_done = i["att_error"]
+                # vel_error_done = i["vel_error"]
+
+                mean_is_perfect = info["eval/mean_is_perfect"]
+                # std_is_perfect = info["eval/std_is_perfect"]
+                mean_pos_perfect = info["eval/mean_pos_perfect"]
+                # std_pos_perfect = info["eval/std_pos_perfect"]
+                mean_att_perfect = info["eval/mean_att_perfect"]
+                # std_att_perfect = info["eval/std_att_perfect"]
+                mean_vel_perfect = info["eval/mean_vel_perfect"]
+                # std_vel_perfect = info["eval/std_vel_perfect"]
+
                 diagnostics = info["diagnostics"]
                 global_step = info["eval/total_steps"]
                 mean_return = info["eval/mean_returns"]
@@ -391,8 +451,11 @@ def train(env: Environment, config: Config, rng: jax.Array):
                 mean_approxkl = diagnostics.approxkl.mean()
                 std_approxkl = diagnostics.approxkl.std()
                 if config.VERBOSE:
-                    print(f"eval | steps={global_step} | eps={total_episodes} | return={mean_return:.2f}+-{std_return:.2f} | "
-                          f"length={int(mean_length)}+-{std_length:.1f} | approxkl={mean_approxkl:.4f}+-{std_approxkl:.4f}")
+                    print(f"eval | steps={global_step:.0f} | eps={total_episodes} | return={mean_return:.1f}+-{std_return:.1f} | "
+                          f"length={int(mean_length)}+-{std_length:.1f} | approxkl={mean_approxkl:.4f}+-{std_approxkl:.4f} | "
+                          f"is_perfect={mean_is_perfect:.2f} | pos_perfect={mean_pos_perfect:.2f} | "
+                          f"att_perfect={mean_att_perfect:.2f} | vel_perfect={mean_vel_perfect:.2f}"
+                          )
 
             jax.debug.callback(callback, metric)
 

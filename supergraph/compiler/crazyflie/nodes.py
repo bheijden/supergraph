@@ -17,6 +17,16 @@ except ModuleNotFoundError:
     print("Brax not installed. Install it with `pip install brax`")
     BRAX_INSTALLED = False
 
+
+try:
+    import mujoco
+    import mujoco.viewer
+    from mujoco import mjx
+    MUJOCO_INSTALLED = True
+except ModuleNotFoundError:
+    print("Mujoco or mujoco-mjx not installed. Install it with `pip install mujoco` or `pip install mujoco-mjx`")
+    MUJOCO_INSTALLED = False
+
 from supergraph.compiler.rl import NormalizeVec, SquashState
 from supergraph.compiler.graph import Graph
 from supergraph.compiler import base
@@ -25,8 +35,27 @@ from supergraph.compiler.base import GraphState, StepState
 from supergraph.compiler.node import BaseNode
 
 
+CRAZYFLIE_PLATFORM_BRAX_XML = "/home/r2ci/supergraph/supergraph/compiler/crazyflie/cf2_brax.xml"
+CRAZYFLIE_PLATFORM_MJX_XML = "/home/r2ci/supergraph/supergraph/compiler/crazyflie/cf2.xml"
+CRAZYFLIE_PLATFORM_MJX_LW_XML = "/home/r2ci/supergraph/supergraph/compiler/crazyflie/cf2_lightweight.xml"
+
+
+@struct.dataclass
+class Rollout:
+    next_gs: base.GraphState
+    next_obs: jax.Array
+    action: jax.Array
+    reward: jax.Array
+    terminated: jax.Array
+    truncated: jax.Array
+    done: jax.Array
+    info: Any
+
+
 @struct.dataclass
 class CrazyflieBaseParams(base.Base):
+    dr: Union[bool, jax.typing.ArrayLike]  # Domain randomization
+    mass_var: jax.typing.ArrayLike  # [%]
 
     @property
     def pwm_hover(self) -> Union[float, jax.Array]:
@@ -53,11 +82,15 @@ class OdeParams(CrazyflieBaseParams):
 
 @struct.dataclass
 class OdeState(base.Base):
+    mass: Union[float, jax.typing.ArrayLike]  # 0.03303
     pos: jax.typing.ArrayLike  # [x, y, z]
     vel: jax.typing.ArrayLike  # [xdot, ydot, zdot]
     att: jax.typing.ArrayLike  # [phi, theta, psi]
     ang_vel: jax.typing.ArrayLike  # [p, q, r]
     thrust_state: Union[float, jax.typing.ArrayLike]  # Thrust state
+    pos_plat: jax.typing.ArrayLike  # [x, y, z] # Platform position
+    att_plat: jax.typing.ArrayLike  # [phi, theta, psi] # Platform attitude
+    vel_plat: jax.typing.ArrayLike  # [xdot, ydot, zdot]  # Platform velocity
 
 
 @struct.dataclass
@@ -67,14 +100,38 @@ class WorldOutput(base.Base):
     att: jax.typing.ArrayLike  # [phi, theta, psi]
     ang_vel: jax.typing.ArrayLike  # [p, q, r]
     thrust_state: Union[float, jax.typing.ArrayLike]  # Thrust state
+    pos_plat: jax.typing.ArrayLike  # [x, y, z] # Platform position
+    att_plat: jax.typing.ArrayLike  # [phi, theta, psi] # Platform attitude
+    vel_plat: jax.typing.ArrayLike  # [xdot, ydot, zdot]  # Platform velocity
+
+
+@struct.dataclass
+class MoCapParams(base.Base):
+    noise: Union[bool, jax.typing.ArrayLike]  # Noise in the measurements
+    pos_std: jax.typing.ArrayLike  # [x, y, z]
+    vel_std: jax.typing.ArrayLike  # [xdot, ydot, zdot]
+    att_std: jax.typing.ArrayLike  # [phi, theta, psi]
+    ang_vel_std: jax.typing.ArrayLike  # [p, q, r]
+    pos_plat_std: jax.typing.ArrayLike  # [x, y, z]
+    att_plat_std: jax.typing.ArrayLike  # [phi, theta, psi]
+    vel_plat_std: jax.typing.ArrayLike  # [xdot, ydot, zdot]
 
 
 @struct.dataclass
 class MoCapOutput(base.Base):
-    pos: jax.typing.ArrayLike  # [x, y, z]
-    vel: jax.typing.ArrayLike  # [xdot, ydot, zdot]
-    att: jax.typing.ArrayLike  # [phi, theta, psi]
+    pos: jax.typing.ArrayLike  # [x, y, z]  # Crazyflie position
+    vel: jax.typing.ArrayLike  # [xdot, ydot, zdot]  # Crazyflie velocity
+    att: jax.typing.ArrayLike  # [phi, theta, psi]  # Crazyflie attitude
     ang_vel: jax.typing.ArrayLike  # [p, q, r]
+    pos_plat: jax.typing.ArrayLike  # [x, y, z] # Platform position
+    att_plat: jax.typing.ArrayLike  # [phi, theta, psi] # Platform attitude
+    vel_plat: jax.typing.ArrayLike  # [xdot, ydot, zdot]  # Platform velocity
+
+    @property
+    def inclination(self):
+        # polar, azimuth = rpy_to_spherical(self.att_plat)
+        # inclination = polar
+        return self.att_plat[1]
 
 
 @struct.dataclass
@@ -158,6 +215,72 @@ class PPOAgentParams(base.Base):
         action = self.act_scaling.unsquash(action)
         return action
 
+    @staticmethod
+    def get_observation(pos, vel, att, pos_plat=None, vel_plat=None, att_plat=None, pos_offset=None) -> jax.Array:
+        """Get observation from position, velocity and attitude.
+
+        Either pos, vel, att are of shape (3,) or (window_size, 3),
+        where (-1, 3) is the shape of the most recent single observation.
+
+        All are in world frame except for pos_offset which is in cf local frame.
+
+        :param pos: Position of the crazyflie with shape (window_size, 3) or (3,)
+        :param vel: Velocity of the crazyflie with shape (window_size, 3) or (3,)
+        :param att: Attitude (rpy) of the crazyflie with shape (window_size, 3) or (3,)
+        :param pos_plat: Position of the platform with shape (window_size, 3) or (3,)
+        :param vel_plat: Velocity of the platform with shape (window_size, 3) or (3,)
+        :param att_plat: Attitude (rpy) of the platform with shape (window_size, 3) or (3,)
+        :param pos_offset: Offset to add to the cf position (in cf local frame)
+        :return: Flattened observation of the policy
+        """
+        for arg in [pos, vel, att, pos_plat, vel_plat, att_plat, pos_offset]:
+            if arg is not None and len(arg.shape) > 1:
+                raise NotImplementedError("Batched observations not implemented yet")
+
+        # offset cf_pos based on pos_offset in local frame
+        cf2w_R = rpy_to_R(att)
+        cf_pos = pos + cf2w_R @ pos_offset if pos_offset is not None else pos
+        cf_att = att
+        cf_vel = vel
+        assert (pos_plat is None) == (att_plat is None), "All or none of pos_plat, att_plat should be provided."
+        if pos_plat is not None and att_plat is not None:
+            is_pos = pos_plat
+            polar, azimuth = rpy_to_spherical(att_plat)
+            inclination = polar
+
+            # Make cf=crazyflie rotation matrix
+            cf2w_R = rpy_to_R(cf_att)
+
+            # Make is=inclined surface rotation matrix
+            Rz = jnp.array([[jnp.cos(azimuth), -jnp.sin(azimuth), 0],
+                            [jnp.sin(azimuth), jnp.cos(azimuth), 0],
+                            [0, 0, 1]])
+            is2w_R = Rz
+
+            # World to is=inclined surface
+            w2is_H = jnp.eye(4)
+            w2is_H = w2is_H.at[:3, :3].set(is2w_R.T)
+            w2is_H = w2is_H.at[:3, 3].set(-is2w_R.T @ is_pos)
+
+            # Transform cf position to is frame
+            cf_pos_is = w2is_H @ jnp.concatenate([cf_pos, jnp.array([1.0])])
+            cf_pos_is = cf_pos_is[:3]
+            cf_att_is = R_to_rpy(is2w_R.T @ cf2w_R)
+
+            # Transform cf velocity to is frame
+            cf_vel_is = is2w_R.T @ cf_vel
+
+            # Prepare observation
+            obs = jnp.concatenate([cf_pos_is, cf_vel_is, cf_att_is, jnp.array([inclination])])
+
+            # Assuming vel_plat represents the velocity vector in the world frame
+            if vel_plat is not None:
+                is_vel = is2w_R.T @ vel_plat.reshape(-1)[-3:]
+                obs = jnp.concatenate([obs, is_vel])
+        else:
+            obs = jnp.concatenate([cf_pos, cf_vel, cf_att])
+        return obs
+
 
 @struct.dataclass
 class AgentOutput(base.Base):
@@ -166,6 +289,7 @@ class AgentOutput(base.Base):
 
 @struct.dataclass
 class AttitudeControllerParams(base.Base):
+    rate: Union[float, jax.typing.ArrayLike]  # Rate of the controller
     pwm_hover: Union[float, jax.typing.ArrayLike]  # PWM hover value
     pwm_range: jax.typing.ArrayLike  # PWM range
     max_pwm_from_hover: Union[float, jax.typing.ArrayLike]  # Max PWM from hover
@@ -184,6 +308,11 @@ class AttitudeControllerParams(base.Base):
         actions_mapped["z_ref"] = None
         return AttitudeControllerOutput(**actions_mapped)
 
+    def to_command(self, state: Any, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array]) -> Tuple[Any, AttitudeControllerOutput]:
+        # Scale action
+        output = self.to_output(action)
+        return state, output
+
 
 @struct.dataclass
 class SentinelState(base.Base):
@@ -191,7 +320,9 @@ class SentinelState(base.Base):
     init_vel: jax.typing.ArrayLike
     init_att: jax.typing.ArrayLike
     init_ang_vel: jax.typing.ArrayLike
-    inclination: jax.typing.ArrayLike
+    init_pos_plat: jax.typing.ArrayLike
+    init_att_plat: jax.typing.ArrayLike
+    init_vel_plat: jax.typing.ArrayLike
 
 
 @struct.dataclass
@@ -206,20 +337,24 @@ class SentinelParams(base.Base):
     x_range: jax.typing.ArrayLike
     y_range: jax.typing.ArrayLike
     z_range: jax.typing.ArrayLike
-    inclination_range: jax.typing.ArrayLike
+    azimuth_max: Union[float, jax.typing.ArrayLike]
+    polar_range: jax.typing.ArrayLike
     fixed_position: jax.typing.ArrayLike
     fixed_inclination: Union[float, jax.typing.ArrayLike]
+    vel_land: Union[float, jax.typing.ArrayLike]
+    gamma: Union[float, jax.typing.ArrayLike]
+    noise: Union[bool, jax.typing.ArrayLike]
 
 
 @struct.dataclass
 class PIDState(base.Base):
     integral: Union[float, jax.typing.ArrayLike]
-    last_error: Union[float, jax.typing.ArrayLike]
 
 
 @struct.dataclass
 class PIDParams(base.Base):
     # Attitude controller params
+    rate: Union[float, jax.typing.ArrayLike]  # Rate of the controller
     pwm_range: jax.typing.ArrayLike  # PWM range
     max_pwm_from_hover: Union[float, jax.typing.ArrayLike]  # Max PWM from hover
     max_z_ref: Union[float, jax.typing.ArrayLike]
@@ -256,14 +391,76 @@ class PIDParams(base.Base):
             actions_mapped["z_ref"] = actions_mapped["z_ref"] * (self.max_z_ref - self.min_z_ref) / 2 + (self.max_z_ref + self.min_z_ref) / 2
         else:
             actions_mapped["z_ref"] = 0.
-        # actions_mapped["z_ref"] = actions_mapped.get("z_ref", 0.0) * (self.max_z_ref - self.min_z_ref) / 2 + (self.max_z_ref + self.min_z_ref) / 2
         return AttitudeControllerOutput(**actions_mapped)
+
+    def to_command(self, state: PIDState, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array]) -> Tuple[PIDState, AttitudeControllerOutput]:
+        # subtract platform z, so that the controller is relative to the platform
+        z = z - z_plat
+
+        # Scale action
+        output = self.to_output(action)
+
+        # PID
+        dt = 1/self.rate
+        error = output.z_ref - z
+        proportional = self.kp * error
+        # last_error = jnp.where(step_state.seq == 0, error, state.last_error)
+        # derivative = self.kd * (error - last_error) / dt
+        derivative = -self.kd * vz
+        integral_unclipped = state.integral + self.ki * error * dt
+        integral = jnp.clip(integral_unclipped, -self.max_integral, self.max_integral)
+
+        z_force_from_hover = proportional + derivative + integral
+        z_force = z_force_from_hover + self.mass * 9.81
+        z_force = jnp.clip(z_force, 0.0, None)
+
+        # Given the z_force component, the total force can be calculated
+        # by finding the force that would be required to maintain the desired z_force given that the force is directed based
+        # on the roll and pitch references.
+        force = z_force / jnp.cos(output.phi_ref) / jnp.cos(output.theta_ref)
+        pwm_unclippped = force_to_pwm(self.pwm_constants, force)
+
+        # clip pwm
+        max_pwm = self.pwm_hover + self.max_pwm_from_hover
+        min_pwm = self.pwm_hover - self.max_pwm_from_hover
+        pwm = jnp.clip(pwm_unclippped, min_pwm, max_pwm)
+
+        # Update output
+        new_output = output.replace(pwm_ref=pwm)
+
+        # Update state
+        new_state = state.replace(integral=integral)
+
+        # todo: DEBUG
+        new_output = DebugAttitudeControllerOutput(
+            # original
+            pwm_ref=new_output.pwm_ref,
+            phi_ref=new_output.phi_ref,
+            theta_ref=new_output.theta_ref,
+            psi_ref=new_output.psi_ref,
+            z_ref=new_output.z_ref,
+            # debug
+            z=z,
+            error=error,
+            proportional=proportional,
+            derivative=derivative,
+            integral_unclipped=integral_unclipped,
+            integral=integral,
+            z_force_from_hover=z_force_from_hover,
+            z_force=z_force,
+            force=force,
+            force_hover=self.force_hover,
+            pwm_unclipped=pwm_unclippped,
+            pwm_hover=self.pwm_hover,
+        )
+        return new_state, new_output
 
 
 class Sentinel(BaseNode):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._init_method = dict(start_position="random", inclination="fixed")
+        self._init_method = dict(start_position="inclined_landing",
+                                 inclination="random")
 
     def set_init_method(self, start_position: str, inclination: str):
         self._init_method = dict(start_position=start_position, inclination=inclination)
@@ -274,13 +471,17 @@ class Sentinel(BaseNode):
             pwm_range=jnp.array([10000, 60000]),
             phi_max=onp.pi / 6,
             theta_max=onp.pi / 6,
-            psi_max=0.,  # No yaw
+            psi_max=0.,  # No yaw (or onp.pi?)
             x_range=jnp.array([-2.0, 2.0]),
             y_range=jnp.array([-2.0, 2.0]),
             z_range=jnp.array([-0.5, 2.0]),
-            inclination_range=jnp.array([0., onp.pi / 7]),  # Max inclination (25.7 degrees)
+            azimuth_max=0.,  # todo: not yet working....
+            polar_range=jnp.array([0., onp.pi / 7]),  # Max inclination (25.7 degrees)
             fixed_position=jnp.array([0.0, 0.0, 2.0]),  # Above the platform
             fixed_inclination=onp.pi / 7,  # Fixed inclination (25.7 degrees)
+            vel_land=0.1,  # Landing velocity
+            gamma=0.99,  # Discount factor
+            noise=True,  # Whether to add noise to the measurements & perform domain randomization.
         )
         return params
 
@@ -288,8 +489,8 @@ class Sentinel(BaseNode):
         """Default state of the root."""
         if rng is None:
             rng = jax.random.PRNGKey(0)
-        rngs = jax.random.split(rng, num=5)
-        params = self.get_step_state(graph_state).params if graph_state else self.default_params(rng[0])
+        rngs = jax.random.split(rng, num=6)
+        params = self.get_step_state(graph_state).params if graph_state else self.init_params(rng[0])
         # Start position
         if self._init_method["start_position"] == "random":
             init_x = jax.random.uniform(rngs[1], shape=(), minval=params.x_range[0], maxval=params.x_range[1])
@@ -298,23 +499,33 @@ class Sentinel(BaseNode):
             init_pos = jnp.array([init_x, init_y, init_z])
         elif self._init_method["start_position"] == "fixed":
             init_pos = jnp.array([0.0, 0.0, 2.0])
+        elif self._init_method["start_position"] == "inclined_landing":
+            init_x = jax.random.uniform(rngs[1], shape=(), minval=0.5, maxval=params.x_range[1])
+            init_y = jax.random.uniform(rngs[2], shape=(), minval=-0.2, maxval=0.2)
+            init_z = jax.random.uniform(rngs[3], shape=(), minval=-0.2, maxval=0.2)
+            init_pos = jnp.array([init_x, init_y, init_z])
         else:
             raise ValueError(f"Unknown start position method: {self._init_method['start_position']}")
 
         # Inclination
         if self._init_method["inclination"] == "random":
-            inclination = jax.random.uniform(rngs[4], shape=(), minval=params.inclination_range[0], maxval=params.inclination_range[1])
+            polar = jax.random.uniform(rngs[4], shape=(), minval=params.polar_range[0], maxval=params.polar_range[1])
+            azimuth = jax.random.uniform(rngs[5], shape=(), minval=-params.azimuth_max, maxval=params.azimuth_max)
         elif self._init_method["inclination"] == "fixed":
-            inclination = params.fixed_inclination
+            polar = params.fixed_inclination
+            azimuth = 0.0
         else:
             raise ValueError(f"Unknown inclination method: {self._init_method['inclination']}")
+        init_att_plat = spherical_to_rpy(polar, azimuth)
 
         return SentinelState(
             init_pos=init_pos,
             init_vel=jnp.array([0.0, 0.0, 0.0]),
             init_att=jnp.array([0.0, 0.0, 0.0]),
             init_ang_vel=jnp.array([0.0, 0.0, 0.0]),
-            inclination=inclination,
+            init_pos_plat=jnp.array([0.0, 0.0, 0.0]),
+            init_att_plat=init_att_plat,
+            init_vel_plat=jnp.array([0.0, 0.0, 0.0]),
         )
 
     def step(self, step_state: StepState) -> Tuple[StepState, base.Empty]:
@@ -338,7 +549,11 @@ class OdeWorld(BaseNode):
         self.dt_substeps = dt / self.substeps
 
     def init_params(self, rng: jax.Array = None, graph_state: GraphState = None) -> OdeParams:
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        dr = ss_sentinel.params.noise if ss_sentinel is not None else False
         return OdeParams(
+            dr=dr,  # Whether to perform domain randomization
+            mass_var=0.02,
             mass=0.03303,
             gain_constant=1.1094,
             time_constant=0.183806,
@@ -355,25 +570,38 @@ class OdeWorld(BaseNode):
         """Default state of the node."""
         ss_world = self.get_step_state(graph_state)
         params = ss_world.params if ss_world else self.init_params(rng, graph_state)
+        # Determine mass
+        rng, rng_mass = jax.random.split(rng)
+        use_dr = params.dr
+        dmass = use_dr*params.mass*params.mass_var*jax.random.uniform(rng_mass, shape=(), minval=-1, maxval=1)
+        mass = params.mass + dmass
+        # Determine initial state
         A, B, C, D = params.state_space
         init_thrust_state = B * params.pwm_hover / (-A)  # Assumes dthrust = 0.
-
         ss_sentinel = self.get_step_state(graph_state, "sentinel")
         if ss_sentinel is not None:
             state = OdeState(
+                mass=mass,
                 pos=ss_sentinel.state.init_pos,
                 vel=ss_sentinel.state.init_vel,
                 att=ss_sentinel.state.init_att,
                 ang_vel=ss_sentinel.state.init_ang_vel,
                 thrust_state=init_thrust_state,
+                pos_plat=ss_sentinel.state.init_pos_plat,
+                att_plat=ss_sentinel.state.init_att_plat,
+                vel_plat=ss_sentinel.state.init_vel_plat,
             )
         else:
             state = OdeState(
+                mass=mass,
                 pos=jnp.array([0.0, 0.0, 2.0]),
                 vel=jnp.array([0.0, 0.0, 0.0]),
                 att=jnp.array([0.0, 0.0, 0.0]),
                 ang_vel=jnp.array([0.0, 0.0, 0.0]),
                 thrust_state=init_thrust_state,
+                pos_plat=jnp.array([0.0, 0.0, 0.0]),
+                att_plat=jnp.array([0.0, 0.0, 0.0]),
+                vel_plat=jnp.array([0.0, 0.0, 0.0]),
             )
         return state
 
@@ -388,6 +616,9 @@ class OdeWorld(BaseNode):
                     att=world_state.att,
                     ang_vel=world_state.ang_vel,
                     thrust_state=world_state.thrust_state,
+                    pos_plat=world_state.pos_plat,
+                    att_plat=world_state.att_plat,
+                    vel_plat=world_state.vel_plat,
                 )
 
     def step(self, step_state: StepState) -> Tuple[StepState, WorldOutput]:
@@ -413,17 +644,19 @@ class OdeWorld(BaseNode):
         new_step_state = step_state.replace(state=next_state)
 
         # Correct for negative roll w.r.t brax & vicon convention
-        # todo: THETA SIGN: check if this is necessary
-        att = new_step_state.state.att.at[0].multiply(-1)
+        # att = new_step_state.state.att.at[0].multiply(-1)  # todo: PHI SIGN: check if this is necessary
+        att = new_step_state.state.att
 
         # Prepare output
         output = WorldOutput(
             pos=new_step_state.state.pos,
             vel=new_step_state.state.vel,
-            # att=new_step_state.state.att,
             att=att,
             ang_vel=new_step_state.state.ang_vel,
             thrust_state=new_step_state.state.thrust_state,
+            pos_plat=new_step_state.state.pos_plat,
+            att_plat=new_step_state.state.att_plat,
+            vel_plat=new_step_state.state.vel_plat,
         )
         return new_step_state, output
 
@@ -436,7 +669,7 @@ class OdeWorld(BaseNode):
         return state + (k1 + k2 * 2 + k3 * 2 + k4) * (dt / 6)
 
     @staticmethod
-    def _ode_crazyflie(params: OdeParams, state: OdeState, u: AttitudeControllerOutput) -> OdeState:
+    def _old_ode_crazyflie(params: OdeParams, state: OdeState, u: AttitudeControllerOutput) -> OdeState:
         # Unpack params
         mass = params.mass
         gain_c = params.gain_constant
@@ -454,8 +687,8 @@ class OdeWorld(BaseNode):
         thrust_state = state.thrust_state
         # Unpack action
         pwm = u.pwm_ref
-        phi_ref = u.phi_ref
-        theta_ref = -u.theta_ref  # todo: THETA SIGN: check if this is necessary
+        phi_ref = u.phi_ref  # todo: PHI SIGN: check if this is necessary
+        theta_ref = u.theta_ref
         psi_ref = u.psi_ref
 
         # Calculate static thrust offset (from hover)
@@ -494,7 +727,82 @@ class OdeWorld(BaseNode):
         ])
         dang_vel = jnp.array([0.0, 0.0, 0.0])  # No angular velocity
         dthrust_state = A * thrust_state + B * pwm  # Thrust_state dot
-        dstate = OdeState(pos=dpos, vel=dvel, att=datt, ang_vel=dang_vel, thrust_state=dthrust_state)
+        dmass = 0.0  # No mass change
+        dpos_plat = jnp.array([0.0, 0.0, 0.0])
+        datt_plat = jnp.array([0.0, 0.0, 0.0])
+        dvel_plat = jnp.array([0.0, 0.0, 0.0])
+        dstate = OdeState(mass=dmass, pos=dpos, vel=dvel, att=datt, ang_vel=dang_vel, thrust_state=dthrust_state,
+                          pos_plat=dpos_plat, att_plat=datt_plat, vel_plat=dvel_plat)
+        return dstate
+
+    @staticmethod
+    def _ode_crazyflie(params: OdeParams, state: OdeState, u: AttitudeControllerOutput) -> OdeState:
+        # Unpack params
+        mass = params.mass
+        gain_c = params.gain_constant
+        time_c = params.time_constant
+        A, B, C, D = params.state_space
+        pwm_constants = params.pwm_constants
+        dragxy_c = params.dragxy_constants  # [9.1785e-7, 0.04076521, 380.8359] # Fa,x
+        dragz_c = params.dragz_constants # [10.311e-7, 0.04076521, 380.8359] # Fa,z
+        # Unpack state
+        x, y, z = state.pos
+        xdot, ydot, zdot = state.vel
+        phi, theta, psi = state.att
+        p, q, r = state.ang_vel
+        thrust_state = state.thrust_state
+        # Unpack action
+        pwm = u.pwm_ref
+        phi_ref = u.phi_ref
+        theta_ref = u.theta_ref
+        psi_ref = u.psi_ref
+
+        # Calculate static thrust offset (from hover)
+        # Difference between the steady state value of eq (3.16) and eq (3.3) at the hover point (mass*g)
+        # System Identification of the Crazyflie 2.0 Nano Quadrocopter. Julian Forster, 2016.
+        #  -https://www.research-collection.ethz.ch/handle/20.500.11850/214143
+        hover_force = 9.81 * mass
+        hover_pwm = force_to_pwm(pwm_constants, hover_force)  # eq (3.3)
+
+        # Steady state thrust_state for the given pwm
+        ss_thrust_state = B / (-A) * hover_pwm  # steady-state with eq (3.16)
+        ss_force = 4 * (C * ss_thrust_state + D * hover_pwm)  # Thrust force at steady state
+        force_offset = ss_force - hover_force  # Offset from hover
+
+        # Calculate forces
+        force_thrust = 4 * (C * thrust_state + D * pwm)  # Thrust force
+        force_thrust = onp.clip(force_thrust - force_offset, 0, None)  # Correct for offset
+
+        # Calculate rotation matrix
+        R = rpy_to_R(jnp.array([phi, theta, psi]))
+
+        # Calculate drag matrix
+        # pwm_drag = force_to_pwm(pwm_constants, force_thrust)  # Symbolic PWM to approximate rotor drag
+        # dragxy = dragxy_c[0] * 4 * (dragxy_c[1] * pwm_drag + dragxy_c[2])  # Fa,x
+        # dragz = dragz_c[0] * 4 * (dragz_c[1] * pwm_drag + dragz_c[2])  # Fa,z
+        # drag_matrix = jnp.array([
+        #     [dragxy, 0, 0],
+        #     [0, dragxy, 0],
+        #     [0, 0, dragz]
+        # ])
+        # force_drag = drag_matrix @ jnp.array([xdot, ydot, zdot]) # todo: should be vel in body frame...
+
+        # Calculate dstate
+        dpos = jnp.array([xdot, ydot, zdot])
+        dvel = R @ jnp.array([0, 0, force_thrust / mass]) - jnp.array([0, 0, 9.81])
+        datt = jnp.array([
+            (gain_c * phi_ref - phi) / time_c,  # phi_dot
+            (gain_c * theta_ref - theta) / time_c,  # theta_dot
+            0.  # (gain_c * psi_ref - psi) / time_c  # psi_dot
+        ])
+        dang_vel = jnp.array([0.0, 0.0, 0.0])  # No angular velocity
+        dthrust_state = A * thrust_state + B * pwm  # Thrust_state dot
+        dmass = 0.0  # No mass change
+        dpos_plat = jnp.array([0.0, 0.0, 0.0])
+        datt_plat = jnp.array([0.0, 0.0, 0.0])
+        dvel_plat = jnp.array([0.0, 0.0, 0.0])
+        dstate = OdeState(mass=dmass, pos=dpos, vel=dvel, att=datt, ang_vel=dang_vel, thrust_state=dthrust_state,
+                          pos_plat=dpos_plat, att_plat=datt_plat, vel_plat=dvel_plat)
         return dstate
 
 
@@ -516,13 +824,85 @@ def force_to_pwm(pwm_constants: jax.typing.ArrayLike, force: Union[float, jax.ty
     return pwm
 
 
-def rpy_to_wxyz(rpy: jax.typing.ArrayLike) -> jax.typing.ArrayLike:
-    x = jnp.sin(rpy[0] / 2) * jnp.cos(rpy[1] / 2) * jnp.cos(rpy[2] / 2) - jnp.cos(rpy[0] / 2) * jnp.sin(rpy[1] / 2) * jnp.sin(rpy[2] / 2)
-    y = jnp.cos(rpy[0] / 2) * jnp.sin(rpy[1] / 2) * jnp.cos(rpy[2] / 2) + jnp.sin(rpy[0] / 2) * jnp.cos(rpy[1] / 2) * jnp.sin(rpy[2] / 2)
-    z = jnp.cos(rpy[0] / 2) * jnp.cos(rpy[1] / 2) * jnp.sin(rpy[2] / 2) - jnp.sin(rpy[0] / 2) * jnp.sin(rpy[1] / 2) * jnp.cos(rpy[2] / 2)
-    w = jnp.cos(rpy[0] / 2) * jnp.cos(rpy[1] / 2) * jnp.cos(rpy[2] / 2) + jnp.sin(rpy[0] / 2) * jnp.sin(rpy[1] / 2) * jnp.sin(rpy[2] / 2)
-    quat = jnp.array([w, x, y, z])
-    return quat
+def rpy_to_wxyz(v: jax.typing.ArrayLike) -> jax.Array:
+    """
+    Converts euler rotations in degrees to quaternion.
+    this follows the Tait-Bryan intrinsic rotation formalism: x-y'-z''
+    """
+    c1, c2, c3 = jnp.cos(v / 2)
+    s1, s2, s3 = jnp.sin(v / 2)
+    w = c1 * c2 * c3 - s1 * s2 * s3
+    x = s1 * c2 * c3 + c1 * s2 * s3
+    y = c1 * s2 * c3 - s1 * c2 * s3
+    z = c1 * c2 * s3 + s1 * s2 * c3
+    return jnp.array([w, x, y, z])
+
+
+def rpy_to_R(rpy, convention="xyz"):
+    phi, theta, psi = rpy
+    Rz = jnp.array([[jnp.cos(psi), -jnp.sin(psi), 0],
+                    [jnp.sin(psi), jnp.cos(psi), 0],
+                    [0, 0, 1]])
+    Ry = jnp.array([[jnp.cos(theta), 0, jnp.sin(theta)],
+                    [0, 1, 0],
+                    [-jnp.sin(theta), 0, jnp.cos(theta)]])
+    Rx = jnp.array([[1, 0, 0],
+                    [0, jnp.cos(phi), -jnp.sin(phi)],
+                    [0, jnp.sin(phi), jnp.cos(phi)]])
+    # Define below which one is Tait-bryan and which one is Euler
+    if convention == "xyz":
+        R = Rx @ Ry @ Rz  # This uses Tait-Bryan angles (XYZ sequence)
+    elif convention == "zyx":
+        R = Rz @ Ry @ Rx  # This uses Tait-Bryan angles (ZYX sequence)
+    else:
+        raise ValueError(f"Unknown convention: {convention}")
+    return R
+
+
+def R_to_rpy(R: jax.typing.ArrayLike, convention="xyz") -> jax.typing.ArrayLike:
+    p = jnp.arcsin(R[0, 2])
+    def no_gimbal_lock(*_):
+        r = jnp.arctan2(-R[1, 2] / jnp.cos(p), R[2, 2] / jnp.cos(p))
+        y = jnp.arctan2(-R[0, 1] / jnp.cos(p), R[0, 0] / jnp.cos(p))
+        return jnp.array([r, p, y])
+
+    def gimbal_lock(*_):
+        # When cos(p) is close to zero, gimbal lock occurs, and many solutions exist.
+        # Here, we arbitrarily set roll to zero in this case.
+        r = 0
+        y = jnp.arctan2(R[1, 0], R[1, 1])
+        return jnp.array([r, p, y])
+    rpy = jax.lax.cond(jnp.abs(jnp.cos(p)) > 1e-6, no_gimbal_lock, gimbal_lock, None)
+    return rpy
+
+
+def spherical_to_R(polar, azimuth):
+    Rz = jnp.array([[jnp.cos(azimuth), -jnp.sin(azimuth), 0],
+                    [jnp.sin(azimuth), jnp.cos(azimuth), 0],
+                    [0, 0, 1]])
+    Ry = jnp.array([[jnp.cos(polar), 0, jnp.sin(polar)],
+                    [0, 1, 0],
+                    [-jnp.sin(polar), 0, jnp.cos(polar)]])
+    R = Ry @ Rz
+    return R
+
+
+def R_to_spherical(R):
+    polar = jnp.arccos(R[2, 2])
+    azimuth = jnp.arctan2(R[1, 2], R[0, 2])
+    return polar, azimuth
+
+
+def rpy_to_spherical(rpy):
+    R = rpy_to_R(rpy, convention="xyz")
+    polar, azimuth = R_to_spherical(R)
+    return polar, azimuth
+
+
+def spherical_to_rpy(polar, azimuth):
+    R = spherical_to_R(polar, azimuth)
+    rpy = R_to_rpy(R)
+    return rpy
 
 # def eom2d_crazyflie_closedloop(x, u, param):
 #     # States are: [x, z, x_dot. z_dot, Theta, thrust_state]
@@ -551,31 +931,66 @@ def rpy_to_wxyz(rpy: jax.typing.ArrayLike) -> jax.typing.ArrayLike:
 
 
 class MoCap(BaseNode):
+    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> MoCapParams:
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        noise = ss_sentinel.params.noise if ss_sentinel is not None else False
+        return MoCapParams(
+            noise=noise,
+            pos_std=onp.array([0.01, 0.01, 0.01], dtype=float),     # [x, y, z]
+            vel_std=onp.array([0.1, 0.1, 0.1], dtype=float),        # [xdot, ydot, zdot]
+            att_std=onp.array([0.01, 0.01, 0.01], dtype=float),     # [phi, theta, psi]
+            ang_vel_std=onp.array([0.1, 0.1, 0.1], dtype=float),        # [p, q, r]
+            pos_plat_std=onp.array([0.01, 0.01, 0.01], dtype=float),  # [x, y, z]
+            att_plat_std=onp.array([0.01, 0.01, 0.01], dtype=float),  # [phi, theta, psi]
+            vel_plat_std=onp.array([0.1, 0.1, 0.1], dtype=float),   # [xdot, ydot, zdot]
+        )
+
     def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> MoCapOutput:
         """Default output of the node."""
         # Randomly define some initial sensor values
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        att_plat = ss_sentinel.state.init_att_plat if ss_sentinel is not None else jnp.array([0.0, onp.pi/7, 0.0])
         output = MoCapOutput(
             pos=jnp.array([0.0, 0.0, 2.0]),
             vel=jnp.array([0.0, 0.0, 0.0]),
             att=jnp.array([0.0, 0.0, 0.0]),
             ang_vel=jnp.array([0.0, 0.0, 0.0]),
+            pos_plat=jnp.array([0.0, 0.0, 0.0]),
+            att_plat=att_plat,
+            vel_plat=jnp.array([0.0, 0.0, 0.0]),
         )
         return output
 
     def step(self, step_state: StepState) -> Tuple[StepState, MoCapOutput]:
         """Step the node."""
         world = step_state.inputs["world"][-1].data
+        use_noise = step_state.params.noise
+        params = step_state.params
+
+        # Sample small amount of noise to pos, vel (std=0.05), pos(std=0.005)
+        rngs = jax.random.split(step_state.rng, 8)
+        new_rng = rngs[0]
+        pos_noise = params.pos_std*jax.random.normal(rngs[1], world.pos.shape)
+        vel_noise = params.vel_std*jax.random.normal(rngs[2], world.vel.shape)
+        att_noise = params.att_std*jax.random.normal(rngs[3], world.att.shape)
+        ang_vel_noise = params.ang_vel_std*jax.random.normal(rngs[4], world.ang_vel.shape)
+        pos_plat_noise = params.pos_plat_std*jax.random.normal(rngs[5], world.pos_plat.shape)
+        att_plat_noise = params.att_plat_std*jax.random.normal(rngs[6], world.att_plat.shape)
+        vel_plat_noise = params.vel_plat_std*jax.random.normal(rngs[7], world.vel_plat.shape)
 
         # Prepare output
         output = MoCapOutput(
-            pos=world.pos,
-            vel=world.vel,
-            att=world.att,
-            ang_vel=world.ang_vel,
+            pos=world.pos + use_noise*pos_noise,
+            vel=world.vel + use_noise*vel_noise,
+            att=world.att + use_noise*att_noise,
+            ang_vel=world.ang_vel + use_noise*ang_vel_noise,
+            pos_plat=world.pos_plat + use_noise*pos_plat_noise,
+            att_plat=world.att_plat + use_noise*att_plat_noise,
+            vel_plat=world.vel_plat + use_noise*vel_plat_noise,
         )
 
-        # Update state (NOOP)
-        new_step_state = step_state
+        # Update state
+        new_step_state = step_state.replace(rng=new_rng)
 
         return new_step_state, output
 
@@ -593,6 +1008,7 @@ class AttitudeController(BaseNode):
         theta_max = ss_sentinel.params.theta_max if ss_sentinel is not None else onp.pi / 6
         psi_max = ss_sentinel.params.psi_max if ss_sentinel is not None else 0.0
         return AttitudeControllerParams(
+            rate=self.rate,
             pwm_hover=pwm_hover,
             pwm_range=pwm_range,
             max_pwm_from_hover=pwm_from_hover,
@@ -620,12 +1036,12 @@ class AttitudeController(BaseNode):
         _, state, params, inputs = step_state.rng, step_state.state, step_state.params, step_state.inputs
         params: AttitudeControllerParams
 
-        # Update state
-        new_step_state = step_state
-
         # Prepare output
         action = inputs["agent"][-1].data.action
-        output = params.to_output(action)
+        new_state, output = params.to_command(state, action, z=None, vz=None, z_plat=None)
+
+        # Update state
+        new_step_state = step_state.replace(state=new_state)
         return new_step_state, output
 
 
@@ -638,11 +1054,8 @@ class PID(AttitudeController):
         mass = ss_world.params.mass if ss_world is not None else 0.03303
         pwm_constants = ss_world.params.pwm_constants if ss_world is not None else onp.array([2.130295e-11, 1.032633e-6, 5.485e-4])
         # PID
-        kp: Union[float, jax.typing.ArrayLike]
-        kv: Union[float, jax.typing.ArrayLike]
-        ki: Union[float, jax.typing.ArrayLike]
-        max_integral: Union[float, jax.typing.ArrayLike]  # Max integrator state
         return PIDParams(
+            rate=self.rate,
             pwm_range=p.pwm_range,
             max_pwm_from_hover=p.max_pwm_from_hover,
             max_z_ref=2.0,
@@ -668,7 +1081,6 @@ class PID(AttitudeController):
     def init_state(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> PIDState:
         return PIDState(
             integral=0.0,
-            last_error=0.0,
         )
 
     def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AttitudeControllerOutput:
@@ -715,66 +1127,15 @@ class PID(AttitudeController):
 
         # Prepare output
         action = inputs["agent"][-1].data.action
-        output = params.to_output(action)
-
-        # PID
-        dt = 1 / self.rate
         z = inputs["mocap"][-1].data.pos[-1]
-        zdot = inputs["mocap"][-1].data.vel[-1]
-        error = output.z_ref - z
-        proportional = params.kp * error
-        # last_error = jnp.where(step_state.seq == 0, error, state.last_error)
-        # derivative = params.kd * (error - last_error) / dt
-        derivative = -params.kd * zdot
-        integral_unclipped = state.integral + params.ki * error * dt
-        integral = jnp.clip(integral_unclipped, -params.max_integral, params.max_integral)
-
-        z_force_from_hover = proportional + derivative + integral
-        z_force = z_force_from_hover + params.mass * 9.81
-        z_force = jnp.clip(z_force, 0.0, None)
-
-        # Given the z_force component, the total force can be calculated
-        # by finding the force that would be required to maintain the desired z_force given that the force is directed based
-        # on the roll and pitch references.
-        force = z_force / jnp.cos(output.phi_ref) / jnp.cos(output.theta_ref)
-        pwm_unclippped = force_to_pwm(params.pwm_constants, force)
-
-        # clip pwm
-        max_pwm = params.pwm_hover + params.max_pwm_from_hover
-        min_pwm = params.pwm_hover - params.max_pwm_from_hover
-        pwm = jnp.clip(pwm_unclippped, min_pwm, max_pwm)
-
-        # Update output
-        new_output = output.replace(pwm_ref=pwm)
+        vz = inputs["mocap"][-1].data.vel[-1]
+        z_plat = inputs["mocap"][-1].data.pos_plat[-1]
+        new_state, output = params.to_command(state, action, z=z, vz=vz, z_plat=z_plat)
 
         # Update state
-        new_state = state.replace(integral=integral, last_error=error)
         new_step_state = step_state.replace(state=new_state)
 
-        # todo: DEBUG
-        new_output = DebugAttitudeControllerOutput(
-            # original
-            pwm_ref=new_output.pwm_ref,
-            phi_ref=new_output.phi_ref,
-            theta_ref=new_output.theta_ref,
-            psi_ref=new_output.psi_ref,
-            z_ref=new_output.z_ref,
-            # debug
-            z=z,
-            error=error,
-            proportional=proportional,
-            derivative=derivative,
-            integral_unclipped=integral_unclipped,
-            integral=integral,
-            z_force_from_hover=z_force_from_hover,
-            z_force=z_force,
-            force=force,
-            force_hover=params.force_hover,
-            pwm_unclipped=pwm_unclippped,
-            pwm_hover=params.pwm_hover,
-        )
-
-        return new_step_state, new_output
+        return new_step_state, output
 
 
 class RandomAgent(BaseNode):
@@ -818,12 +1179,12 @@ class PPOAgent(RandomAgent):
 
     def step(self, step_state: base.StepState) -> Tuple[base.StepState, AgentOutput]:
         params = step_state.params
+        obs = self.get_observation(step_state)
         if any([params.act_scaling is None, params.obs_scaling is None, params.model is None]):
             new_ss, output = super().step(step_state)
             return new_ss, output  # Random action if not initialized
 
         # Evaluate policy
-        obs = self.get_observation(step_state)
         if params.stochastic:
             rng = step_state.rng
             rng, rng_policy = jax.random.split(rng)
@@ -837,19 +1198,23 @@ class PPOAgent(RandomAgent):
 
     @staticmethod
     def get_observation(step_state: base.StepState) -> jax.Array:
-        # Flatten all inputs and state of the supervisor as the observation
-        all_data = [i.data for i in step_state.inputs.values()] + [step_state.state]
-        all_fdata = []
-        for data in all_data:
-            # Vectorize data
-            vdata = jax.tree_util.tree_map(lambda x: jnp.array(x).reshape(-1), data)
-            # Flatten pytree
-            fdata, _ = jax.tree_util.tree_flatten(vdata)
-            # Add to all_fdata
-            all_fdata += fdata
-        # Concatenate all_fdata
-        cdata = jnp.concatenate(all_fdata)
-        return cdata
+        mocap = step_state.inputs["mocap"][-1].data
+        obs = step_state.params.get_observation(pos=mocap.pos, vel=mocap.vel, att=mocap.att,
+                                                pos_plat=mocap.pos_plat, att_plat=mocap.att_plat)
+        return obs
+        # # Flatten all inputs and state of the supervisor as the observation
+        # all_data = [i.data for i in step_state.inputs.values()] + [step_state.state]
+        # all_fdata = []
+        # for data in all_data:
+        #     # Vectorize data
+        #     vdata = jax.tree_util.tree_map(lambda x: jnp.array(x).reshape(-1), data)
+        #     # Flatten pytree
+        #     fdata, _ = jax.tree_util.tree_flatten(vdata)
+        #     # Add to all_fdata
+        #     all_fdata += fdata
+        # # Concatenate all_fdata
+        # cdata = jnp.concatenate(all_fdata)
+        # return cdata
 
 
 def save(path, json_rollout):
@@ -862,52 +1227,72 @@ def save(path, json_rollout):
     path.write_text(json_rollout)
 
 
-def render(rollout: Union[List[GraphState], GraphState]):
+def render(rollout: Union[List[GraphState], GraphState], done: jax.Array = None, frame="world"):
     """Render the rollout as an HTML file."""
+    if frame not in ["world"]:
+        raise NotImplementedError(f"Frame {frame} not implemented")
     if not BRAX_INSTALLED:
         raise ImportError("Brax not installed. Install it with `pip install brax`")
     from brax.io import html
 
-    if isinstance(rollout, list):
-        rollout = jax.tree_util.tree_map(lambda *x: jnp.stack(x), *rollout)
-
     # Extract rollout data
-    inclination_rollout = rollout.nodes["sentinel"].state.inclination
     world_output_rollout = rollout.nodes["mocap"].inputs["world"][:, -1].data
 
     # Determine fps
-    dt = rollout.nodes["world"].ts[-1] / rollout.nodes["world"].ts.shape[-1]
+    max_ts = jnp.max(rollout.nodes["agent"].ts)
+    max_seq = jnp.max(rollout.nodes["agent"].seq)
+    dt = max_ts / max_seq
 
     # Initialize system
-    CRAZYFLIE_PLATFORM_XML = "/home/r2ci/supergraph/supergraph/compiler/crazyflie/cf2.xml"
-    sys = mjcf.load(CRAZYFLIE_PLATFORM_XML)
+    sys = mjcf.load(CRAZYFLIE_PLATFORM_BRAX_XML)
     sys = sys.replace(dt=dt)
 
-    def _set_pipeline_state(inclination, world_output):
-        # Set platform state
-        xyz = jnp.array([0., 0., 0.])  # todo: always at the origin
+    def _set_pipeline_state(i):
+        world_output = world_output_rollout[i]
 
-        # Set crazyflie state
-        pos = world_output.pos
-        rpy = world_output.att  # todo: probably not correct...
-        quat = rpy_to_wxyz(rpy)
+        platform_qpos, platform_cor_qpos, cf_qpos = get_qpos(world_output.pos, world_output.att,
+                                                             world_output.pos_plat, world_output.att_plat)
+        if sys.init_q.shape[0] == 24:
+            qpos = jnp.concatenate([platform_qpos, platform_cor_qpos, cf_qpos])
+        elif sys.init_q.shape[0] == 16:
+            qpos = jnp.concatenate([platform_cor_qpos, cf_qpos])
+        else:
+            raise ValueError(f"Unsupported qpos shape: {sys.init_q.shape}")
 
         # Set initial state
-        extra = jnp.array([0.])
-        qpos = jnp.concatenate([xyz, jnp.array([inclination]), pos, quat, extra])
+        # qpos = jnp.concatenate([platform, platform_cor, cf])
         qvel = jnp.zeros_like(qpos)
         x, xd = gen_pipeline.kinematics.forward(sys, qpos, qvel)
         pipeline_state = gen_pipeline.State.init(qpos, qvel, x, xd)  # pytype: disable=wrong-arg-types  # jax-ndarray
         # pipeline_state = gen_pipeline.init(sys, qpos, qvel)
         return pipeline_state
 
-    pipeline_state_rollout = jax.vmap(_set_pipeline_state)(inclination_rollout, world_output_rollout)
-    pipeline_state_lst = []
-    for i in range(inclination_rollout.shape[0]):
-        pipeline_state_i = jax.tree_util.tree_map(lambda x: x[i], pipeline_state_rollout)
+    jit_set_pipeline_state = jax.jit(_set_pipeline_state)
+    pipeline_state_lst = [jit_set_pipeline_state(0)]
+    for i in range(1, world_output_rollout.pos.shape[0]):
+        if done is not None and done[i]:
+            break
+        pipeline_state_i = jit_set_pipeline_state(i)
         pipeline_state_lst.append(pipeline_state_i)
     rollout_json = html.render(sys, pipeline_state_lst)
     return rollout_json
+
+
+def rollout(env: Union[rl.Environment, rl.BaseWrapper], rng: jax.Array):
+    init_gs, init_obs, info = env.reset(rng)
+
+    def _scan(_carry, _):
+        _gs, _obs = _carry
+        _ss = _gs.nodes["agent"]
+        _action = _ss.params.get_action(_obs)
+        next_gs, next_obs, reward, terminated, truncated, info = env.step(_gs, _action)
+        done = jnp.logical_or(terminated, truncated)
+        r = Rollout(next_gs, next_obs, _action, reward, terminated, truncated, done, info)
+        return (next_gs, next_obs), r
+
+    carry = (init_gs, init_obs)
+    _, r = jax.lax.scan(_scan, carry, jnp.arange(env.max_steps))
+    return r
 
 
 class Environment(rl.Environment):
@@ -936,17 +1321,10 @@ class Environment(rl.Environment):
         return ss.seq >= self.graph.max_steps
 
     def get_terminated(self, graph_state: base.GraphState) -> Union[bool, jax.Array]:
-        ss = self.get_step_state(graph_state)
         terminated = False
-        # terminated = jnp.logical_or(terminated, jnp.any(jnp.abs(ss.inputs["mocap"][-1].data.pos > 10)))
         return terminated  # Not terminating prematurely
 
     def get_reward(self, graph_state: base.GraphState, action: jax.Array) -> Union[float, jax.Array]:
-        # Get goal
-        ss_sentinel = self.get_step_state(graph_state, "sentinel")
-        state_sentinel: SentinelState = ss_sentinel.state
-        inclination = state_sentinel.inclination
-
         # Get current state
         ss = self.get_step_state(graph_state)
         last_mocap: MoCapOutput = ss.inputs["mocap"][-1].data
@@ -963,19 +1341,15 @@ class Environment(rl.Environment):
         phi_ref = output.phi_ref
         psi_ref = output.psi_ref
 
-        # Multiplier when the drone is close to the goal
-        # c = jnp.clip(jnp.linalg.norm(pos), 0.001, None)  # 0.001 to infinity
-        c = 1
-
         # use jnp.where to add rewards
         reward = 0.0
         reward = reward - jnp.sqrt(x**2 + y**2 + z**2)
         reward = reward - 0.2*jnp.sqrt(vx**2 + vy**2 + vz**2)
-        reward = reward - 0.1*jnp.abs(theta_ref)/c
-        reward = reward - 0.1*jnp.abs(phi_ref)/c
-        reward = reward - 0.1*jnp.abs(psi_ref)/c
-        reward = reward - 0.1*jnp.abs(z_ref)/c if z_ref is not None else reward
-        reward = reward - 0.1*jnp.abs(z_ref - z)/c if z_ref is not None else reward
+        reward = reward - 0.1*jnp.abs(theta_ref)
+        reward = reward - 0.1*jnp.abs(phi_ref)
+        reward = reward - 0.1*jnp.abs(psi_ref)
+        reward = reward - 0.1*jnp.abs(z_ref) if z_ref is not None else reward
+        reward = reward - 0.1*jnp.abs(z_ref - z) if z_ref is not None else reward
         return reward
 
     def get_info(self, graph_state: base.GraphState, action: jax.Array = None) -> Dict[str, Any]:
@@ -984,10 +1358,6 @@ class Environment(rl.Environment):
 
     def get_output(self, graph_state: base.GraphState, action: jax.Array) -> AgentOutput:
         return AgentOutput(action=action)
-        # ss_world = self.get_step_state(graph_state, "world")
-        # pwm_from_hover, phi_ref, theta_ref = action
-        # pwm = pwm_from_hover + ss_world.params.pwm_hover
-        # return AttitudeControllerOutput(pwm=pwm, phi_ref=phi_ref, theta_ref=theta_ref, psi_ref=0.0)
 
     def update_step_state(self, graph_state: base.GraphState, action: jax.Array = None) -> Tuple[base.GraphState, base.StepState]:
         """Override this method if you want to update the step state."""
@@ -995,65 +1365,407 @@ class Environment(rl.Environment):
         return graph_state, step_state
 
 
+@struct.dataclass
+class RewardParams:
+    k1: float = 0.78  # Weights att_error
+    k2: float = 0.54  # Weights vyz_error
+    k3: float = 2.35  # Weights vx*theta
+    k4: float = 2.74  # Weights act_att_error
+    f1: float = 8.4   # Weights final att_error
+    f2: float = 1.76  # Weights final vel_error
+    fp: float = 56.5  # Weights final perfect reward
+    p: float = 0.05
+
+
+class InclinedLanding(Environment):
+    def __init__(self, *args, xml_path: str = None, reward_params: RewardParams = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not MUJOCO_INSTALLED:
+            raise ImportError("Mujoco not installed. Install it with `pip install mujoco` or `pip install mujoco-mjx`")
+        self._rwd_params = RewardParams() if reward_params is None else reward_params
+        # self._xml_path = CRAZYFLIE_PLATFORM_MJX_LW_XML if xml_path is None else xml_path
+        self._xml_path = CRAZYFLIE_PLATFORM_MJX_LW_XML if xml_path is None else xml_path
+        self._mj_m = mujoco.MjModel.from_xml_path(self._xml_path)
+        self._mj_d = mujoco.MjData(self._mj_m)
+        self._mjx_m = mjx.device_put(self._mj_m)
+        self._mjx_d = mjx.device_put(self._mj_d)
+
+    def get_terminated(self, graph_state: base.GraphState) -> Union[bool, jax.Array]:
+        state: OdeState = self.get_step_state(graph_state, "world").state
+        dmin = contact_distance(self._mjx_m, self._mjx_d, state.pos, state.att, state.pos_plat, state.att_plat)
+        terminated = dmin < 0.0
+        # platform_qpos, platform_cor_qpos, cf_qpos = get_qpos(state.pos, state.att, state.pos_plat, state.att_plat)
+        # if self._mjx_d.qpos.shape[0] == 24:
+        #     qpos = jnp.concatenate([platform_qpos, platform_cor_qpos, cf_qpos])
+        # elif self._mjx_d.qpos.shape[0] == 16:
+        #     qpos = jnp.concatenate([platform_cor_qpos, cf_qpos])
+        # else:
+        #     print(f"invalid shape")
+        # mjx_d = self._mjx_d.replace(qpos=qpos)
+        # mjx_d = mjx.forward(self._mjx_m, mjx_d)
+        # terminated = mjx_d.contact.dist.min() < 0.0
+        # ss = self.get_step_state(graph_state)
+        # last_mocap: MoCapOutput = ss.inputs["mocap"][-1].data
+        # x, _, _ = last_mocap.pos
+        # terminated = x < 0.
+        return terminated
+
+    def get_reward(self, graph_state: base.GraphState, action: jax.Array):
+        # Get denormalized action
+        p_att: PIDParams = self.get_step_state(graph_state, "attitude").params
+        output = p_att.to_output(action)
+        z_ref = output.z_ref
+        theta_ref = output.theta_ref
+        phi_ref = output.phi_ref
+        psi_ref = output.psi_ref
+        att_ref = jnp.array([phi_ref, theta_ref, psi_ref])
+
+        # Get current state
+        ss = self.get_step_state(graph_state)
+        last_mocap: MoCapOutput = ss.inputs["mocap"][-1].data
+        pos_target = jnp.array([0., 0., 0.])  # Final position target
+
+        # Get rotation matrices
+        R_cf2w_ref = rpy_to_R(att_ref)
+        R_cf2w = rpy_to_R(last_mocap.att)
+        R_is2w = rpy_to_R(last_mocap.att_plat)
+        z_cf_ref = R_cf2w_ref[:, 2]
+        z_cf = R_cf2w[:, 2]
+        z_is = R_is2w[:, 2]  # Final attitude target
+
+        # Calculate attitude error
+        att_error = jnp.arccos(jnp.clip(jnp.dot(z_cf, z_is), -1, 1))  # Minimize angle between two z-axis vectors
+        act_att_error = jnp.arccos(jnp.clip(jnp.dot(z_cf_ref, z_is), -1, 1))  # Minimize angle between two z-axis vectors
+        # att_error = 1-jnp.dot(z_cf, z_is)  # Minimize angle between two z-axis vectors
+        # act_att_error = 1-jnp.dot(z_cf_ref, z_is)  # Minimize angle between two z-axis vectors
+
+        # Calculate components of the landing velocity
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        # vel_land = jnp.dot(z_is, last_mocap.vel)  # Calculate component in direction of z-axis
+        vel_land = last_mocap.vel
+        vel_land_ref = -z_is * ss_sentinel.params.vel_land  # target is landing velocity in negative direction of platform z-axis
+        vel_land_error = jnp.linalg.norm(vel_land_ref-vel_land)
+        z_cf_xy = jnp.array([z_cf[0], z_cf[1], 0]) / jnp.linalg.norm(jnp.array([z_cf[0], z_cf[1], 0]))  # Project z-axis to xy-plane
+        vel_underact = 0.5*jnp.clip(jnp.dot(z_cf_xy, last_mocap.vel), None, 0)   # Promote underactuated motion (i.e. velocity in negative z-axis)
+
+        # running cost
+        k1, k2, k3, k4 = self._rwd_params.k1, self._rwd_params.k2, self._rwd_params.k3, self._rwd_params.k4
+        f1, f2 = self._rwd_params.f1, self._rwd_params.f2
+        fp = self._rwd_params.fp
+        p = self._rwd_params.p
+        pos_error = jnp.linalg.norm(pos_target - last_mocap.pos)
+        vxyz_error = jnp.linalg.norm(last_mocap.vel - jnp.dot(z_is, last_mocap.vel) * z_is)
+        act_z_error = z_ref ** 2
+        pos_perfect = (pos_error < (p * 1.5))
+        att_perfect = (att_error < (p * 1))
+        vel_perfect = (vel_land_error < (p * 5))
+        is_perfect = pos_perfect * att_perfect * vel_perfect
+        cost_eps = pos_error + k1*att_error + k2*vxyz_error + k3*vel_underact + k1*act_att_error + k4*act_z_error
+        cost_final = pos_error + f1*att_error + f2*vel_land_error
+        cost_perfect = -fp * is_perfect
+
+        # Get termination conditions
+        gamma = ss_sentinel.params.gamma
+        terminated = self.get_terminated(graph_state)
+        truncated = self.get_truncated(graph_state)
+        done = jnp.logical_or(terminated, truncated)
+        cost = cost_eps + done * ((1-terminated) * (1/(1-gamma)) + terminated) * cost_final + done * terminated * cost_perfect
+
+        info = {
+            "is_perfect": is_perfect,
+            "pos_perfect": pos_perfect,
+            "att_perfect": att_perfect,
+            "vel_perfect": vel_perfect,
+            "pos_error": pos_error,
+            "att_error": att_error,
+            "vel_error": vel_land_error,
+        }
+
+        return -cost, truncated, terminated, info
+
+    def get_old_reward(self, graph_state: base.GraphState, action: jax.Array):
+        # Get denormalized action
+        p_att: PIDParams = self.get_step_state(graph_state, "attitude").params
+        output = p_att.to_output(action)
+        z_ref = output.z_ref
+        theta_ref = output.theta_ref
+        phi_ref = output.phi_ref
+        psi_ref = output.psi_ref
+        att_ref = jnp.array([phi_ref, theta_ref, psi_ref])
+
+        # Get current state
+        ss = self.get_step_state(graph_state)
+        last_mocap: MoCapOutput = ss.inputs["mocap"][-1].data
+        _, theta, _ = last_mocap.att
+        inclination = last_mocap.inclination
+        vx, vy, vz = last_mocap.vel
+
+        # Calculate components of the landing velocity
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        vx_land = -ss_sentinel.params.vel_land * jnp.sin(inclination)
+        vz_land = -ss_sentinel.params.vel_land * jnp.cos(inclination)
+        vel_target = jnp.array([vx_land, 0., vz_land])  # Final velocity target
+        pos_target = jnp.array([0., 0., 0.])  # Final position target
+        att_target = jnp.array([0., inclination, 0.])  # Final attitude target
+
+        # running cost
+        k1, k2, k3, k4 = self._rwd_params.k1, self._rwd_params.k2, self._rwd_params.k3, self._rwd_params.k4
+        f1, f2 = self._rwd_params.f1, self._rwd_params.f2
+        fp = self._rwd_params.fp
+        p = self._rwd_params.p
+        pos_error = jnp.linalg.norm(pos_target - last_mocap.pos)
+        att_error = jnp.linalg.norm(att_target - last_mocap.att)
+        act_att_error = jnp.linalg.norm(att_target - att_ref)
+        vyz_error = vy**2 + vz**2
+        vx_error = jnp.clip(vx*theta, None, 0)
+        vel_error = jnp.linalg.norm(vel_target - last_mocap.vel)
+        act_z_error = z_ref**2
+        pos_perfect = (pos_error < (p * 1))
+        att_perfect = (att_error < (p * 1))
+        vel_perfect = (vel_error < (p * 10))
+        is_perfect = pos_perfect * att_perfect * vel_perfect
+        cost_eps = pos_error + k1*att_error + k2*vyz_error + k3*vx_error + k1*act_att_error + k4*act_z_error
+        cost_final = pos_error + f1*att_error + f2*vel_error
+        cost_perfect = -fp * is_perfect
+
+        # Get termination conditions
+        gamma = ss_sentinel.params.gamma
+        terminated = self.get_terminated(graph_state)
+        truncated = self.get_truncated(graph_state)
+        done = jnp.logical_or(terminated, truncated)
+        cost = cost_eps + done * ((1-terminated) * (1/(1-gamma)) + terminated) * cost_final + done * terminated * cost_perfect
+
+        new_rwd, _, _, _ = self.get_new_reward(graph_state, action)
+
+        info = {
+            "new_rwd": new_rwd,
+            "is_perfect": is_perfect,
+            "pos_perfect": pos_perfect,
+            "att_perfect": att_perfect,
+            "vel_perfect": vel_perfect,
+            "pos_error": pos_error,
+            "att_error": att_error,
+            "vel_error": vel_error,
+        }
+        return -cost, truncated, terminated, info
+
+    def get_info(self, graph_state: base.GraphState, action: jax.Array = None) -> Dict[str, Any]:
+        return {
+            # "new_rwd": 0.,
+            "is_perfect": False,
+            "pos_perfect": False,
+            "att_perfect": False,
+            "vel_perfect": False,
+            "pos_error": 0.,
+            "att_error": 0.,
+            "vel_error": 0.,
+        }
+
+    def step(self, graph_state: base.GraphState, action: jax.Array):
+        """
+        Step the environment.
+        Can be overridden to provide custom step behavior.
+
+        :param graph_state: The current graph state.
+        :param action: The action to take.
+        :return: Tuple of (graph_state, observation, reward, terminated, truncated, info)
+        """
+        # Convert action to output
+        output = self.get_output(graph_state, action)
+        gs_pre, step_state = self.update_step_state(graph_state, action)
+        # Step the graph
+        gs_post, _ = self.graph.step(graph_state, step_state, output)
+        # Get observation
+        obs = self.get_observation(gs_post)
+        # Get reward, done flags, and some info
+        reward, truncated, terminated, info_rwd = self.get_reward(gs_post, action)
+        # Get info
+        info = self.get_info(gs_post, action)
+        info.update(info_rwd)
+        return gs_post, obs, reward, terminated, truncated, info
+
+
+def contact_distance(mjx_model, mjx_data, pos, att, pos_plat, att_plat):
+    platform_qpos, platform_cor_qpos, cf_qpos = get_qpos(pos, att, pos_plat, att_plat)
+    if mjx_data.qpos.shape[0] == 24:
+        qpos = jnp.concatenate([platform_qpos, platform_cor_qpos, cf_qpos])
+    elif mjx_data.qpos.shape[0] == 16:
+        qpos = jnp.concatenate([platform_cor_qpos, cf_qpos])
+    else:
+        raise ValueError(f"Unsupported qpos shape: {mjx_data.qpos.shape}")
+    mjx_d = mjx_data.replace(qpos=qpos)
+    mjx_d = mjx.forward(mjx_model, mjx_d)
+    # terminated = mjx_d.contact.dist.min() < threshold
+    return mjx_d.contact.dist.min()
+
+
+def get_qpos(pos, att, pos_plat, att_plat):
+    cf_quat = rpy_to_wxyz(att)
+    cf_qpos = jnp.concatenate([pos, cf_quat, jnp.array([0])])
+
+    plat_quat = rpy_to_wxyz(att_plat)
+    pitch_plat = jnp.array([0])
+    platform_qpos = jnp.concatenate([pos_plat, plat_quat, pitch_plat])
+
+    # Set corrected platform state
+    polar_cor, azimuth_cor = rpy_to_spherical(att_plat)
+    att_cor = jnp.array([0., 0, azimuth_cor])
+    quat_cor = rpy_to_wxyz(att_cor)
+    pitch_cor = jnp.array([polar_cor])
+    platform_cor_qpos = jnp.concatenate([pos_plat, quat_cor, pitch_cor])
+    return platform_qpos, platform_cor_qpos, cf_qpos
+
+
 if __name__ == "__main__":
     """Test the crazyflie pipeline."""
-    pwm_constants = jnp.array([2.130295e-11, 1.032633e-6, 5.485e-4])
-    state_space = jnp.array([-15.4666, 1, 3.5616e-5, 7.2345e-8])
-    A, B, C, D = state_space
-    mass = 0.03303
-    static_force = 9.81 * mass
-    static_pwm = force_to_pwm(pwm_constants, static_force)
-    # Calculate thrust_state in steady_state
-    thrust_state = B/(-A) * static_pwm
-    dynamic_force = 4 * (C * thrust_state + D * static_pwm)  # Thrust force
-    dynamic_pwm = force_to_pwm(pwm_constants, dynamic_force)
-    print(f"Static PWM: {static_pwm}, Dynamic PWM: {dynamic_pwm}")
+    # pwm_constants = jnp.array([2.130295e-11, 1.032633e-6, 5.485e-4])
+    # state_space = jnp.array([-15.4666, 1, 3.5616e-5, 7.2345e-8])
+    # A, B, C, D = state_space
+    # mass = 0.03303
+    # static_force = 9.81 * mass
+    # static_pwm = force_to_pwm(pwm_constants, static_force)
+    # # Calculate thrust_state in steady_state
+    # thrust_state = B/(-A) * static_pwm
+    # dynamic_force = 4 * (C * thrust_state + D * static_pwm)  # Thrust force
+    # dynamic_pwm = force_to_pwm(pwm_constants, dynamic_force)
+    # print(f"Static PWM: {static_pwm}, Dynamic PWM: {dynamic_pwm}")
 
     # Initialize system
     import brax.generalized.pipeline as gen_pipeline
     from brax.io import mjcf
     from brax.io import html
-    xml_path = "/home/r2ci/supergraph/supergraph/compiler/crazyflie/cf2.xml"
+    xml_path = "/home/r2ci/supergraph/supergraph/compiler/crazyflie/cf2_brax.xml"
     sys = mjcf.load(xml_path)
-    sys = sys.replace(dt=1/50)
+    sys = sys.replace(dt=1/10)
 
-    import pickle
     # Set platform state
-    xyz = jnp.array([0., 0., 0.])
-    inclination = jnp.pi / 7
-    # Set crazyflie state
-    pos_path = "/home/r2ci/supergraph/scripts/main_crazyflie_pos.pkl"
-    att_path = "/home/r2ci/supergraph/scripts/main_crazyflie_att.pkl"
-    with open(pos_path, "rb") as f:
-        pos = pickle.load(f)
-    with open(att_path, "rb") as f:
-        rpy = pickle.load(f)
+    num_samples = 50
+    pos = jnp.array([0.5, 0., 0.])  # Set the platform at 0.1m in the x-axis
+    pos_offset = jnp.array([0., 0., 0.])  # Offset of cf position in local frame (mocap vs bottom of cf)
+    att = jnp.array([0., 0., 0.])
+    pos_plat = jnp.zeros((num_samples, 3), dtype=float)
 
-    def _set_pipeline_state(xyz, inclination, rpy, pos):
-        # Change the sign of the roll angle
-        rpy = rpy.at[0].multiply(-1)
+    # This is the angles we have.
+    polar = jnp.linspace(onp.pi/7, onp.pi / 7, num_samples)
+    azimuth = jnp.linspace(0.02, 0.98*onp.pi, num_samples)  # When pitch==0, yaw should not be computable (yaw is arbitrary)
+
+    R = jax.vmap(spherical_to_R)(polar, azimuth)
+    rpy = jax.vmap(R_to_rpy)(R)
+    polar_recon, azimuth_recon = jax.vmap(rpy_to_spherical)(rpy)
+    print("Direct reconstruction: ", (polar_recon - polar).mean(), (azimuth_recon - azimuth).mean())
+
+    # todo: double check that roll does not affect the global pitch and yaw!!
+    # todo: we still need to modify.
+
+    # todo: convert global pitch & yaw to rpy attitudes
+    #       - visualize the rpy attitudes and verify their rotation corresponds to fixed pitch and yaw around z
+    # todo: convert the rpy attitudes back to global pitch and yaw
+    #       - If there is no global pitch, global yaw should be arbitrary --> verify that this is the case (fallback to global yaw = 0)
+    # todo: verify that the global pitch and yaw are the same as the original pitch and yaw when pitch is non-zero
+    #       - obs: global yaw can be used to convert crazyflie pose to platform frame (avoid zero global pitch)
+    #       - obs: global pitch can be used as the inclination observation of the platform
+    # todo: verify that adding non-zero yaw to rpy attitudes does not affect the global pitch and yaw
+    # pos_plat = pos_plat.at[:, 0].set(jnp.linspace(0., -1., num_samples))
+    # pos_plat = pos_plat.at[:, 1].set(jnp.linspace(0., -1., num_samples))
+    att_plat = jnp.zeros((num_samples, 3), dtype=float)
+    att_plat = att_plat.at[:, 0].set(jnp.linspace(0., onp.pi / 2, num_samples))
+    att_plat = att_plat.at[:, 1].set(jnp.linspace(0., onp.pi / 2, num_samples))
+    att_plat = att_plat.at[:, 2].set(jnp.linspace(0., onp.pi, num_samples))
+
+    def _in_platform_frame(pos, att, pos_plat, att_plat):
+        vel = jnp.zeros_like(pos)
+        vel_plat = jnp.zeros_like(pos_plat)
+        obs = PPOAgentParams.get_observation(pos, vel, att, pos_plat, vel_plat, att_plat, pos_offset=pos_offset)
+
+        pos_is = obs[:3]
+        att_is = obs[6:9]
+        pos_plat_is = pos_plat - pos_plat
+        att_plat_is = jnp.array([0, 0, 0])
+        # vel_is = obs[3:6]
+        # pitch_plat = obs[9]  # inclination
+        # vel_plat_is = obs[10:13]
 
         # Set crazyflie state
-        quat = rpy_to_wxyz(rpy)
+        quat_is = rpy_to_wxyz(att_is)
+        cf = jnp.concatenate([pos_is, quat_is, jnp.array([0.])])
+
+        # Set platform state
+        quat_plat = rpy_to_wxyz(att_plat_is)
+        inclination = jnp.array([att_plat[1]])  # todo: is this correct?
+        platform = jnp.concatenate([pos_plat_is, quat_plat, inclination])
+
+        # Set platform state
+        pos_cor = pos_plat_is
+        quat_cor = rpy_to_wxyz(att_plat_is)
+        inclination_cor = jnp.array([att_plat[1]])  # todo: is this correct?
+        platform_cor = jnp.concatenate([pos_cor, quat_cor, inclination_cor])
 
         # Set initial state
-        extra = jnp.array([0.])
-        qpos = jnp.concatenate([xyz, jnp.array([inclination]), pos, quat, extra])
+        if sys.init_q.shape[0] == 24:
+            qpos = jnp.concatenate([platform, platform_cor, cf])
+        elif sys.init_q.shape[0] == 16:
+            qpos = jnp.concatenate([platform_cor, cf])
+        else:
+            raise ValueError(f"Unsupported qpos shape: {sys.init_q.shape}")
         qvel = jnp.zeros_like(qpos)
         x, xd = gen_pipeline.kinematics.forward(sys, qpos, qvel)
         pipeline_state = gen_pipeline.State.init(qpos, qvel, x, xd)  # pytype: disable=wrong-arg-types  # jax-ndarray
         # pipeline_state = gen_pipeline.init(sys, qpos, qvel)
         return pipeline_state
 
-    v_set_pipeline_state = jax.vmap(_set_pipeline_state, in_axes=(None, None, 0, 0))
-    rollout = v_set_pipeline_state(xyz, inclination, rpy, pos)
-    pipeline_state_lst = []
-    for i in range(rpy.shape[0]):
-        pipeline_state_i = jax.tree_util.tree_map(lambda x: x[i], rollout)
-        pipeline_state_lst.append(pipeline_state_i)
-    rollout_json = html.render(sys, pipeline_state_lst)
-    save("./nodes_crazyflie.html", rollout_json)
+
+    def in_world_frame(pos, att, pos_plat, att_plat):
+        # Set crazyflie state
+        quat = rpy_to_wxyz(att)
+        cf = jnp.concatenate([pos, quat, jnp.array([0.])])
+
+        # Set platform state
+        quat_plat = rpy_to_wxyz(att_plat)
+        pitch_plat = jnp.array([0])  # jnp.array([att_plat[1]])
+        platform = jnp.concatenate([pos_plat, quat_plat, pitch_plat])
+
+        # Set corrected platform state
+        polar_cor, azimuth_cor = rpy_to_spherical(att_plat)
+        att_cor = jnp.array([0., 0, azimuth_cor])
+        quat_cor = rpy_to_wxyz(att_cor)
+        pitch_cor = jnp.array([polar_cor])
+        platform_cor = jnp.concatenate([pos_plat, quat_cor, pitch_cor])
+
+        # Set initial state
+        if sys.init_q.shape[0] == 24:
+            qpos = jnp.concatenate([platform, platform_cor, cf])
+        elif sys.init_q.shape[0] == 16:
+            qpos = jnp.concatenate([platform_cor, cf])
+        else:
+            raise ValueError(f"Unsupported qpos shape: {sys.init_q.shape}")
+        qvel = jnp.zeros_like(qpos)
+        x, xd = gen_pipeline.kinematics.forward(sys, qpos, qvel)
+        pipeline_state = gen_pipeline.State.init(qpos, qvel, x, xd)  # pytype: disable=wrong-arg-types  # jax-ndarray
+        # pipeline_state = gen_pipeline.init(sys, qpos, qvel)
+        return pipeline_state
+
+
+    # In platform
+    jit_in_platform_frame = jax.jit(_in_platform_frame)
+    in_platform_states = []
+    for i in range(pos_plat.shape[0]):
+        in_platform_i = jit_in_platform_frame(pos, att, pos_plat[i], att_plat[i])
+        in_platform_states.append(in_platform_i)
+    rollout_json = html.render(sys, in_platform_states)
+    save("./in_platform.html", rollout_json)
+    print("./in_platform.html saved!")
+
+    # IN world frame
+    jit_in_world_frame = jax.jit(in_world_frame)
+    in_world_states = []
+    for i in range(pos_plat.shape[0]):
+        in_world_i = jit_in_world_frame(pos, att, pos_plat[i], att_plat[i])
+        in_world_states.append(in_world_i)
+    rollout_json = html.render(sys, in_world_states)
+    save("./in_world.html", rollout_json)
+    print("./in_world.html saved!")
     exit()
+
     # Set platform state
     xyz = jnp.array([0., 0., 0.5])
     inclination = jnp.pi / 7

@@ -241,12 +241,20 @@ class AutoResetWrapper(BaseWrapper):
                 new_ss[name] = ss.replace(rng=gs.nodes[name].rng)
             init = init.replace(graph_state=init.graph_state.replace(nodes=FrozenDict(new_ss)))
         else:
-            rng = None
-            for name, ss in gs.nodes.items():
-                rng = ss.rng
-            assert rng is not None, "No rng found in graph state."
-            init_gs, init_obs, init_info = self._env.reset(rng)
+            name = None
+            for n, ss in gs.nodes.items():
+                name = n
+                if self._env.step_states is not None and name in self._env.step_states:
+                    continue
+                else:
+                    break
+            assert name is not None, "No node found in graph state."
+            ss = gs.nodes[name]
+            new_rng, rng_init = jax.random.split(ss.rng)
+            gs = gs.replace_nodes(nodes={name: ss.replace(rng=new_rng)})  # Update the rng
+            init_gs, init_obs, init_info = self._env.reset(rng_init)
             init = InitialState(graph_state=init_gs, obs=init_obs, info=init_info)
+            # jax.debug.print("x={x}, rng_init={rng_init}", x=init_obs[0], rng_init=rng_init)
 
         # Define the two branches of the conditional
         def is_done(*args):
@@ -258,6 +266,8 @@ class AutoResetWrapper(BaseWrapper):
             return gs, obs, info
 
         next_gs, next_obs, next_info = jax.lax.cond(done, is_done, not_done)
+
+        # next_info["final_gs"] = final_gs
 
         # Note that the reward, terminated, and truncated flags are not reset
         # (i.e. they are from the previous episode).

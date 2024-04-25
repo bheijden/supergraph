@@ -598,6 +598,9 @@ class Base:
             # If o is a scalar, element-wise division
             return jax.tree_util.tree_map(lambda x: x / o, self)
 
+    def __getitem__(self, val):
+        return jax.tree_util.tree_map(lambda x: x[val], self)
+
     def reshape(self, shape: Sequence[int]) -> Any:
         return jax.tree_util.tree_map(lambda x: x.reshape(shape), self)
 
