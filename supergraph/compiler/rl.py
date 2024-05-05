@@ -174,18 +174,20 @@ class Environment:
         """
         # Convert action to output
         output = self.get_output(graph_state, action)
-        gs_pre, step_state = self.update_step_state(graph_state, action)
+        step_state = self.get_step_state(graph_state)
         # Step the graph
-        gs_post, _ = self.graph.step(graph_state, step_state, output)
-        # Get observation
-        obs = self.get_observation(gs_post)
+        gs_pre, _ = self.graph.step(graph_state, step_state, output)
         # Get reward
-        reward = self.get_reward(gs_post, action)
+        reward = self.get_reward(gs_pre, action)
         # Get done flags
-        truncated = self.get_truncated(gs_post)
-        terminated = self.get_terminated(gs_post)
+        truncated = self.get_truncated(gs_pre)
+        terminated = self.get_terminated(gs_pre)
+        # Update step_state
+        gs_post, step_state = self.update_step_state(gs_pre, action)
         # Get info
         info = self.get_info(gs_post, action)
+        # Get observation
+        obs = self.get_observation(gs_post)
         return gs_post, obs, reward, terminated, truncated, info
 
 

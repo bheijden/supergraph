@@ -22,30 +22,21 @@ from supergraph.compiler.graph import Graph
 
 
 if __name__ == "__main__":
+    # todo: stream vicon quaternions?
+    # todo: Initialize from same height as platform.
+    # todo: Incentivize approaching from above.
+    # todo: Improve RL performance in simulation
+    # todo: increase agent rate to 50 (or 80 in real-world?)
+    # todo: Make ZPID controller more aggressive (increase P, I)
+    # todo: account for platform z-offset in combination of get_observation() and get_action().
+    # todo: avoid using hardcoded yaw=0. in the PPOAgentParams.get_observation() method
     # todo: check intrinsic rpy conventions in supergraph.compiler.crazyflie.nodes:
-    #       - rpy_to_R --> wrongfully implemented
     #       - spherical_to_R --> Check order Ry * Rz or reversed?
-    #       - R_to_rpy -> check.
-    # todo: correct for pos_offset in PID controller?
-    # todo: The pid controller must also be corrected with the platform's position
-    # todo: theta and phi were previously negative. Check the effect of this change on plotting
-    #       - Visualize cf pose & vicon pose, and see difference.
-    # todo: theta seems to be negative w.r.t the reference.
-    #       - Check if giving a reference, it is tracked in the correct direction.
-    #       - Check coordinate system jacob's paper vs crazyflie vs mujoco.
     # todo: real experiments checklist
-    #       - CF expects roll, pitch, yaw in degrees.
     #       - Train with variations in yaw --> somehow, azimuth is also rolling the platform...
-    #       - Check what angle conventions (Tait-Bryan or Euler)
-    #           - the KF of the crayzyflie expects?
-    #           - the Mocap system provides (Tait-Bryan)
-    #           - the ODE dynamics provide?
-    #           - Brax uses Tait-Bryan
     #       - Check tracking offset Vicon vs. simulated Mocap
     #           - Simulation: [0,0,0] == perfect landing --> pos_offset=[0,0,0]
     #           - Real: [0,0,0.0193] == real landing --> pos_offset=[0,0,-0.0193]
-    #       - Verify policy's rpy conventions ---> test policy in mujoco to see if it makes sense.
-    #       - Make minimal eagerx implementation for policy evaluation
     #       - Add yaw controller that fixes yaw to zero in the platform frame.
     # todo: Truncation in reference tracking policy
     # todo: Remove DebugAttitudeControllerOutput
@@ -55,7 +46,8 @@ if __name__ == "__main__":
     world = cf.nodes.OdeWorld(name="world", rate=50, color="grape", order=4)
     mocap = cf.nodes.MoCap(name="mocap", rate=50, color="pink", order=1)
     agent = cf.nodes.PPOAgent(name="agent", rate=25, color="teal", order=2)
-    attitude = cf.nodes.PID(name="attitude", rate=50, color="orange", order=3)
+    attitude = cf.nodes.ZPID(name="attitude", rate=50, color="orange", order=3)
+    # attitude = cf.nodes.PID(name="attitude", rate=50, color="orange", order=3)
     # attitude = cf.nodes.AttitudeController(name="attitude", rate=50, color="orange", order=3)
     sentinel = cf.nodes.Sentinel(name="sentinel", rate=1, color="blue", order=0)
     nodes = dict(sentinel=sentinel, world=world, mocap=mocap, agent=agent, attitude=attitude)
@@ -66,6 +58,9 @@ if __name__ == "__main__":
     attitude.connect(agent, window=1, name="agent")
     attitude.connect(mocap, window=1, name="mocap")
     agent.connect(mocap, window=1, name="mocap")
+
+    # Grab sentinel
+    params_sentinel = sentinel.init_params()
 
     # Test API
     step_states = dict()
@@ -84,7 +79,7 @@ if __name__ == "__main__":
                  )
     computation_delays = dict(world=tfd.Deterministic(loc=0.),
                               mocap=tfd.Deterministic(loc=0.),
-                              agent=tfd.Deterministic(loc=0.),
+                              agent=tfd.Deterministic(loc=0.02),
                               attitude=tfd.Deterministic(loc=0.),
                               sentinel=tfd.Deterministic(loc=0.))
     communication_delays = dict()
@@ -101,23 +96,12 @@ if __name__ == "__main__":
         graph = Graph(nodes, agent, graphs_raw, debug=True, supergraph_mode="MCS")
         graph.run = jax.jit(graph.run)
 
-    # RL environment
-    # env = cf.nodes.Environment(graph, order=("sentinel", "world"), randomize_eps=True)
-    env = cf.nodes.InclinedLanding(graph, order=("sentinel", "world"), randomize_eps=True)
-    # gs, obs, info = env.reset(jax.random.PRNGKey(0))
-    # obs_space = env.observation_space(gs)
-    # act_space = env.action_space(gs)
-    # print(f"obs_space: {obs_space.low.shape}, act_space: {act_space.low.shape}")
-    # print(f"obs: {obs}, info: {info}")
-    # gs, obs, reward, terminated, truncated, info = env.step(gs, jnp.zeros(act_space.shape))
-    # print(f"obs: {obs}, reward: {reward}, terminated: {terminated}, truncated: {truncated}, info: {info}")
-
     # Visualize raw graphs
     MAKE_PLOTS = False
     if MAKE_PLOTS:  # Visualize "raw" graph
         G = utils.to_networkx_graph(graphs_raw[0], nodes=nodes)
         supergraph.plot_graph(G, max_x=1.0)
-        plt.show()
+        # plt.show()
 
     # Visualize windowed graphs
     if MAKE_PLOTS:
@@ -130,35 +114,20 @@ if __name__ == "__main__":
         # plt.show()
     # plt.show()
 
-    # Initialize PPO config
-    # config = ppo.Config(
-    #     LR=1e-4,
-    #     NUM_ENVS=64,
-    #     NUM_STEPS=128,  # increased from 16 to 32 (to solve approx_kl divergence)
-    #     TOTAL_TIMESTEPS=5e6,
-    #     UPDATE_EPOCHS=32,
-    #     NUM_MINIBATCHES=32,
-    #     GAMMA=0.91,
-    #     GAE_LAMBDA=0.97,
-    #     CLIP_EPS=0.44,
-    #     ENT_COEF=0.01,
-    #     VF_COEF=0.77,
-    #     MAX_GRAD_NORM=0.87,  # or 0.5?
-    #     NUM_HIDDEN_LAYERS=2,
-    #     NUM_HIDDEN_UNITS=64,
-    #     KERNEL_INIT_TYPE="xavier_uniform",
-    #     HIDDEN_ACTIVATION="tanh",
-    #     STATE_INDEPENDENT_STD=True,
-    #     SQUASH=True,
-    #     ANNEAL_LR=False,
-    #     NORMALIZE_ENV=True,
-    #     DEBUG=False,
-    #     VERBOSE=True,
-    #     FIXED_INIT=True,
-    #     OFFSET_STEP=True,
-    #     NUM_EVAL_ENVS=20,
-    #     EVAL_FREQ=20,
-    # )
+    # RL environment
+    env = cf.nodes.InclinedLanding(graph, order=("sentinel", "world"), randomize_eps=True)
+    # env = cf.nodes.ReferenceTracking(graph, order=("sentinel", "world"), randomize_eps=True)
+    # env = cf.nodes.ReferenceTrackingTerminate(graph, order=("sentinel", "world"), randomize_eps=True)
+    # gs, obs, info = env.reset(jax.random.PRNGKey(0))
+    # obs_space = env.observation_space(gs)
+    # act_space = env.action_space(gs)
+    # print(f"obs_space: {obs_space.low.shape}, act_space: {act_space.low.shape}")
+    # print(f"obs: {obs}, info: {info}")
+    # gs, obs, reward, terminated, truncated, info = env.step(gs, jnp.zeros(act_space.shape))
+    # print(f"obs: {obs}, reward: {reward}, terminated: {terminated}, truncated: {truncated}, info: {info}")
+
+    # config = cf.ppo.ref_tracking
+    # config = cf.ppo.term_ref_tracking
     config = cf.ppo.multi_inclination
     train = functools.partial(ppo.train, env)
     train = jax.jit(train)
@@ -168,9 +137,9 @@ if __name__ == "__main__":
 
     # Initialize agent params
     model_params = res["runner_state"][0].params["params"]
-    act_scaling = res["act_scaling"]
-    obs_scaling = res["norm_obs"]
-    ppo_params = cf.nodes.PPOAgentParams(act_scaling, obs_scaling, model_params,
+    ppo_params = cf.nodes.PPOAgentParams(res["act_scaling"], res["norm_obs"], model_params,
+                                         action_dim=res["act_scaling"].low.shape[0],
+                                         mapping=params_sentinel.ctrl_mapping,
                                          hidden_activation=config.HIDDEN_ACTIVATION, stochastic=False)
     ss_agent = base.StepState(rng=None, params=ppo_params, state=None)
 
@@ -186,6 +155,12 @@ if __name__ == "__main__":
     with open("main_crazyflie_ss_attitude.pkl", "wb") as f:
         pickle.dump(ss_att_onp, f)
     print("Attitude params saved!")
+
+    # Save sentinel params
+    ss_sentinel = jax.tree_util.tree_map(lambda x: onp.array(x), gs.nodes["sentinel"])
+    with open("main_crazyflie_ss_sentinel.pkl", "wb") as f:
+        pickle.dump(ss_sentinel, f)
+    print("Sentinel params saved!")
 
     # Initialize
     rng = jax.random.PRNGKey(0)
@@ -231,9 +206,9 @@ if __name__ == "__main__":
 
     # Html visualization may not work properly, if it's already rendering somewhere else.
     # In such cases, comment-out all but one HTML(pendulum.render(rollout))
-    plt.show()
     rollout_json = cf.render(rollout)
     cf.save("./main_crazyflie.html", rollout_json)
+    plt.show()
     exit()
 
     # Rollout

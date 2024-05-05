@@ -24,16 +24,6 @@ import rex.sysid.evo as evo
 import rex.sysid.transform as transform
 
 if __name__ == "__main__":
-    # todo: limit to theta, and initialize at y=0, phi=0, with phi_ref=0.
-    # todo: PID Attitude controller
-    # todo: stop gradients, necessary?
-    # todo: Save best policy
-    # todo: Optionally clip value function
-    # todo: Properly handle truncated episodes (record terminal observation)
-    # todo: Create sweep script
-    # todo: Create eval_fn in PPO (e.g., for wandb logging)
-    # todo: Train reference tracking policy with zref tracking
-
     # Create nodes
     world = cf.nodes.OdeWorld(name="world", rate=50, color="grape", order=4)
     mocap = cf.nodes.MoCap(name="mocap", rate=50, color="pink", order=1)
@@ -168,7 +158,7 @@ if __name__ == "__main__":
         init_gs = gs.replace_nodes({"attitude": new_ss_pid, "world": new_ss_world})
         carry = graph.reset(init_gs)
 
-        # Rollout with scan
+        # Rollout with scan                                             ,m,,,
         def _scan(_carry, _):
             _gs, _ss = _carry
             action = jnp.zeros(env.action_space(init_gs).shape, dtype=float)

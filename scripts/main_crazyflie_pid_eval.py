@@ -198,8 +198,8 @@ if __name__ == "__main__":
             _gs, _ss = _carry
             action = jnp.zeros(env.action_space(init_gs).shape, dtype=float)
             output = cf.nodes.AgentOutput(action=action)
-            # _gs, _ss = graph.step(_gs, step_state=_ss, output=output)
-            _gs, _ss = graph.step(_gs)
+            _gs, _ss = graph.step(_gs, step_state=_ss, output=output)
+            # _gs, _ss = graph.step(_gs)
             return (_gs, _ss), _gs
 
         _, graph_states = jax.lax.scan(_scan, carry, jnp.arange(graph.max_steps))
@@ -213,10 +213,10 @@ if __name__ == "__main__":
     rollout_jit = jax.jit(_rollout)
     rng = jax.random.PRNGKey(1)
     _params = dict(
-        kp=1.0,
-        ki=1.0,
-        kd=0.4,
-        max_integral=0.1
+        kp=0.25,  # 1.0,
+        ki=0.25,  # 1.0,
+        kd=0.1,  # 0.4,
+        max_integral=0.1  # 0.1
     )
     rollout = rollout_jit(_params, rng)
     _plot_results(rollout)

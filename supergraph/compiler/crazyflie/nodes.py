@@ -33,6 +33,7 @@ from supergraph.compiler import base
 from supergraph.compiler import rl
 from supergraph.compiler.base import GraphState, StepState
 from supergraph.compiler.node import BaseNode
+from supergraph.compiler.crazyflie.pid import PidObject
 
 
 CRAZYFLIE_PLATFORM_BRAX_XML = "/home/r2ci/supergraph/supergraph/compiler/crazyflie/cf2_brax.xml"
@@ -173,10 +174,10 @@ class PPOAgentParams(base.Base):
     output_activation: str = struct.field(pytree_node=False, default="gaussian")
     stochastic: bool = struct.field(pytree_node=False, default=False)
     action_dim: int = struct.field(pytree_node=False, default=3)
+    mapping: List[str] = struct.field(pytree_node=False, default=None)
 
     def apply_actor(self, x: jax.typing.ArrayLike, rng: jax.Array = None) -> jax.Array:
         # Get parameters
-        # actor_params = self.train_state.params["params"]["actor"]
         actor_params = self.model["actor"]
         num_layers = sum(["Dense" in k in k for k in actor_params.keys()])
 
@@ -216,7 +217,7 @@ class PPOAgentParams(base.Base):
         return action
 
     @staticmethod
-    def get_observation(pos, vel, att, pos_plat=None, vel_plat=None, att_plat=None, pos_offset=None) -> jax.Array:
+    def get_observation(pos, vel, att, pos_plat=None, vel_plat=None, att_plat=None, pos_offset=None, prev_action=None) -> jax.Array:
         """Get observation from position, velocity and attitude.
 
         Either pos, vel, att are of shape (3,) or (window_size, 3),
@@ -267,6 +268,9 @@ class PPOAgentParams(base.Base):
             cf_pos_is = cf_pos_is[:3]
             cf_att_is = R_to_rpy(is2w_R.T @ cf2w_R)
 
+            # Force cf_yaw=0
+            cf_att_is = cf_att_is.at[2].set(0.0)  # todo: UNCOMMENT
+
             # Transform cf velocity to is frame
             cf_vel_is = is2w_R.T @ cf_vel
 
@@ -279,7 +283,24 @@ class PPOAgentParams(base.Base):
                 obs = jnp.concatenate([obs, is_vel])
         else:
             obs = jnp.concatenate([cf_pos, cf_vel, cf_att])
+        if prev_action is not None:
+            obs = jnp.concatenate([obs, prev_action])
         return obs
+
+    def to_output(self, action: jax.Array) -> Dict:
+        assert self.mapping is not None, "Mapping not provided"
+        actions_mapped = {k: a for a, k in zip(action, self.mapping)}
+        actions_mapped["pwm_ref"] = None
+        actions_mapped["theta_ref"] = actions_mapped.get("theta_ref", 0.0)
+        actions_mapped["phi_ref"] = actions_mapped.get("phi_ref", 0.0)
+        actions_mapped["psi_ref"] = actions_mapped.get("psi_ref", 0.0)
+        actions_mapped["z_ref"] = actions_mapped.get("z_ref", 0.0)
+        return actions_mapped
+
+
+@struct.dataclass
+class AgentState(base.Base):
+    prev_action: jax.typing.ArrayLike
 
 
 @struct.dataclass
@@ -290,25 +311,18 @@ class AgentOutput(base.Base):
 @struct.dataclass
 class AttitudeControllerParams(base.Base):
     rate: Union[float, jax.typing.ArrayLike]  # Rate of the controller
-    pwm_hover: Union[float, jax.typing.ArrayLike]  # PWM hover value
-    pwm_range: jax.typing.ArrayLike  # PWM range
-    max_pwm_from_hover: Union[float, jax.typing.ArrayLike]  # Max PWM from hover
-    max_phi_ref: Union[float, jax.typing.ArrayLike]  # Max phi reference (roll), max: pi/6 rad
-    max_theta_ref: Union[float, jax.typing.ArrayLike]  # Max theta reference (pitch), max: pi/6 rad
-    max_psi_ref: Union[float, jax.typing.ArrayLike]  # Max psi reference (yaw)
-    mapping: List[str] = struct.field(pytree_node=False, default_factory=lambda: ["pwm_ref", "theta_ref", "phi_ref", "psi_ref"])
+    mapping: List[str] = struct.field(pytree_node=False)
 
     def to_output(self, action: jax.Array) -> AttitudeControllerOutput:
         actions_mapped = {k: a for a, k in zip(action, self.mapping)}
-        actions_mapped["pwm_ref"] = jnp.clip(self.pwm_hover + actions_mapped.get("pwm_ref", 0.0) * self.max_pwm_from_hover,
-                                             self.pwm_range[0], self.pwm_range[1])
-        actions_mapped["theta_ref"] = actions_mapped.get("theta_ref", 0.0) * self.max_theta_ref
-        actions_mapped["phi_ref"] = actions_mapped.get("phi_ref", 0.0) * self.max_phi_ref
-        actions_mapped["psi_ref"] = actions_mapped.get("psi_ref", 0.0) * self.max_psi_ref
+        actions_mapped["pwm_ref"] = actions_mapped.get("pwm_ref", 10001)
+        actions_mapped["theta_ref"] = actions_mapped.get("theta_ref", 0.0)
+        actions_mapped["phi_ref"] = actions_mapped.get("phi_ref", 0.0)
+        actions_mapped["psi_ref"] = actions_mapped.get("psi_ref", 0.0)
         actions_mapped["z_ref"] = None
         return AttitudeControllerOutput(**actions_mapped)
 
-    def to_command(self, state: Any, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array]) -> Tuple[Any, AttitudeControllerOutput]:
+    def to_command(self, state: Any, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array], att: jax.typing.ArrayLike) -> Tuple[Any, AttitudeControllerOutput]:
         # Scale action
         output = self.to_output(action)
         return state, output
@@ -333,6 +347,7 @@ class SentinelParams(base.Base):
     phi_max: Union[float, jax.typing.ArrayLike]
     theta_max: Union[float, jax.typing.ArrayLike]
     psi_max: Union[float, jax.typing.ArrayLike]
+    z_max: Union[float, jax.typing.ArrayLike]
     # Init states
     x_range: jax.typing.ArrayLike
     y_range: jax.typing.ArrayLike
@@ -344,6 +359,9 @@ class SentinelParams(base.Base):
     vel_land: Union[float, jax.typing.ArrayLike]
     gamma: Union[float, jax.typing.ArrayLike]
     noise: Union[bool, jax.typing.ArrayLike]
+    ctrl_mapping: List[str] = struct.field(pytree_node=False)
+    init_cf: str = struct.field(pytree_node=False)
+    init_plat: str = struct.field(pytree_node=False)
 
 
 @struct.dataclass
@@ -355,23 +373,17 @@ class PIDState(base.Base):
 class PIDParams(base.Base):
     # Attitude controller params
     rate: Union[float, jax.typing.ArrayLike]  # Rate of the controller
-    pwm_range: jax.typing.ArrayLike  # PWM range
-    max_pwm_from_hover: Union[float, jax.typing.ArrayLike]  # Max PWM from hover
-    max_z_ref: Union[float, jax.typing.ArrayLike]
-    min_z_ref: Union[float, jax.typing.ArrayLike]
-    max_phi_ref: Union[float, jax.typing.ArrayLike]  # Max phi reference (roll), max: pi/6 rad
-    max_theta_ref: Union[float, jax.typing.ArrayLike]  # Max theta reference (pitch), max: pi/6 rad
-    max_psi_ref: Union[float, jax.typing.ArrayLike]  # Max psi reference (yaw)
     # Crazyflie params
     mass: Union[float, jax.typing.ArrayLike]  # 0.03303
     pwm_constants: jax.typing.ArrayLike  # (world) [2.130295e-11, 1.032633e-6, 5.485e-4] # [a,b,c]
+    pwm_from_hover: Union[float, jax.typing.ArrayLike]
     # PID
     kp: Union[float, jax.typing.ArrayLike]
     kd: Union[float, jax.typing.ArrayLike]
     ki: Union[float, jax.typing.ArrayLike]
     max_integral: Union[float, jax.typing.ArrayLike]  # Max integrator state
-    mapping: List[str] = struct.field(pytree_node=False,
-                                      default_factory=lambda: ["z_ref", "theta_ref", "phi_ref", "psi_ref"])
+    # Action mapping
+    mapping: List[str] = struct.field(pytree_node=False)
 
     @property
     def pwm_hover(self) -> Union[float, jax.Array]:
@@ -384,16 +396,13 @@ class PIDParams(base.Base):
     def to_output(self, action: jax.Array) -> AttitudeControllerOutput:
         actions_mapped = {k: a for a, k in zip(action, self.mapping)}
         actions_mapped["pwm_ref"] = None
-        actions_mapped["theta_ref"] = actions_mapped.get("theta_ref", 0.0) * self.max_theta_ref
-        actions_mapped["phi_ref"] = actions_mapped.get("phi_ref", 0.0) * self.max_phi_ref
-        actions_mapped["psi_ref"] = actions_mapped.get("psi_ref", 0.0) * self.max_psi_ref
-        if "z_ref" in actions_mapped:
-            actions_mapped["z_ref"] = actions_mapped["z_ref"] * (self.max_z_ref - self.min_z_ref) / 2 + (self.max_z_ref + self.min_z_ref) / 2
-        else:
-            actions_mapped["z_ref"] = 0.
+        actions_mapped["theta_ref"] = actions_mapped.get("theta_ref", 0.0)
+        actions_mapped["phi_ref"] = actions_mapped.get("phi_ref", 0.0)
+        actions_mapped["psi_ref"] = actions_mapped.get("psi_ref", 0.0)
+        actions_mapped["z_ref"] = actions_mapped.get("z_ref", 0.0)
         return AttitudeControllerOutput(**actions_mapped)
 
-    def to_command(self, state: PIDState, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array]) -> Tuple[PIDState, AttitudeControllerOutput]:
+    def to_command(self, state: PIDState, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array], att: jax.typing.ArrayLike = None) -> Tuple[PIDState, AttitudeControllerOutput]:
         # subtract platform z, so that the controller is relative to the platform
         z = z - z_plat
 
@@ -402,6 +411,7 @@ class PIDParams(base.Base):
 
         # PID
         dt = 1/self.rate
+        # error = jnp.clip(output.z_ref - z, -0.1, 0.1)
         error = output.z_ref - z
         proportional = self.kp * error
         # last_error = jnp.where(step_state.seq == 0, error, state.last_error)
@@ -414,16 +424,23 @@ class PIDParams(base.Base):
         z_force = z_force_from_hover + self.mass * 9.81
         z_force = jnp.clip(z_force, 0.0, None)
 
+        # Get angles
+        if att is not None:
+            phi, theta, _ = att
+        else:
+            phi, theta = output.phi_ref, output.theta_ref
+
         # Given the z_force component, the total force can be calculated
         # by finding the force that would be required to maintain the desired z_force given that the force is directed based
         # on the roll and pitch references.
-        force = z_force / jnp.cos(output.phi_ref) / jnp.cos(output.theta_ref)
-        pwm_unclippped = force_to_pwm(self.pwm_constants, force)
+        cphi_ctheta = jnp.clip(jnp.cos(phi) * jnp.cos(theta), 0.21, 1.0)
+        force = z_force / cphi_ctheta
+        pwm_unclipped = force_to_pwm(self.pwm_constants, force)
 
         # clip pwm
-        max_pwm = self.pwm_hover + self.max_pwm_from_hover
-        min_pwm = self.pwm_hover - self.max_pwm_from_hover
-        pwm = jnp.clip(pwm_unclippped, min_pwm, max_pwm)
+        max_pwm = self.pwm_hover + self.pwm_from_hover
+        min_pwm = self.pwm_hover - self.pwm_from_hover
+        pwm = jnp.clip(pwm_unclipped, min_pwm, max_pwm)
 
         # Update output
         new_output = output.replace(pwm_ref=pwm)
@@ -450,8 +467,127 @@ class PIDParams(base.Base):
             z_force=z_force,
             force=force,
             force_hover=self.force_hover,
-            pwm_unclipped=pwm_unclippped,
+            pwm_unclipped=pwm_unclipped,
             pwm_hover=self.pwm_hover,
+        )
+        return new_state, new_output
+
+
+@struct.dataclass
+class RewardParams:
+    k1: float = 0.78  # Weights att_error
+    k2: float = 0.54  # Weights vyz_error
+    k3: float = 2.35  # Weights vx*theta
+    k4: float = 2.74  # Weights act_att_error
+    f1: float = 8.4   # Weights final att_error
+    f2: float = 1.76  # Weights final vel_error
+    fp: float = 56.5  # Weights final perfect reward
+    p: float = 0.05
+
+
+@struct.dataclass
+class ZPIDState(base.Base):
+    pidZ: PidObject
+    pidVz: PidObject
+
+
+@struct.dataclass
+class ZPIDParams(base.Base):
+    # Other
+    UINT16_MAX: Union[int, jax.typing.ArrayLike]
+    pwm_scale: Union[float, jax.typing.ArrayLike]
+    pwm_base: Union[float, jax.typing.ArrayLike]
+    pwm_range: Union[float, jax.typing.ArrayLike]
+    vel_max_overhead: Union[float, jax.typing.ArrayLike]
+    zvel_max: Union[float, jax.typing.ArrayLike]
+    # PID
+    pidZ: PidObject
+    pidVz: PidObject
+    # Action mapping
+    mapping: List[str] = struct.field(pytree_node=False)
+
+    def reset(self) -> ZPIDState:
+        # Replace output limits
+        z_outputLimit = jnp.maximum(0.5, self.zvel_max) * self.vel_max_overhead
+        vz_outputLimit = self.UINT16_MAX / 2 / self.pwm_scale
+        pidZ = self.pidZ.replace(outputLimit=z_outputLimit)
+        pidVz = self.pidVz.replace(outputLimit=vz_outputLimit)
+        # Reset
+        pidZ = pidZ.pidReset()
+        pidVz = pidVz.pidReset()
+        return ZPIDState(pidZ=pidZ, pidVz=pidVz)
+
+    def to_output(self, action: jax.Array) -> AttitudeControllerOutput:
+        actions_mapped = {k: a for a, k in zip(action, self.mapping)}
+        actions_mapped["pwm_ref"] = None
+        actions_mapped["theta_ref"] = actions_mapped.get("theta_ref", 0.0)
+        actions_mapped["phi_ref"] = actions_mapped.get("phi_ref", 0.0)
+        actions_mapped["psi_ref"] = actions_mapped.get("psi_ref", 0.0)
+        actions_mapped["z_ref"] = actions_mapped.get("z_ref", 0.0)
+        return AttitudeControllerOutput(**actions_mapped)
+
+    def to_command(self, state: ZPIDState, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array], att: jax.typing.ArrayLike = None) -> Tuple[ZPIDState, AttitudeControllerOutput]:
+        # Get output from action (use mapping)
+        output = self.to_output(action)
+
+        # Get PID objects
+        pidZ = state.pidZ
+        pidVz = state.pidVz
+
+        # subtract platform z, so that the controller is relative to the platform
+        z = z - z_plat
+        z_ref = output.z_ref
+
+        # Run position controller
+        pidZ = pidZ.pidUpdate(desired=z_ref, measured=z)
+        vz_ref = pidZ.output
+
+        # Run velocity controller
+        pidVz = pidVz.pidUpdate(desired=vz_ref, measured=vz)
+        pwmRaw = pidVz.output
+
+        # Scale the thrust and add feed forward term
+        pwm_unclipped = pwmRaw * self.pwm_scale + self.pwm_base
+        pwm = jnp.clip(pwm_unclipped, self.pwm_range[0], self.pwm_range[1])
+
+        # # Get angles
+        # if att is not None:
+        #     phi, theta, _ = att
+        # else:
+        #     phi, theta = output.phi_ref, output.theta_ref
+        #
+        # # Given the z_force component, the total force can be calculated
+        # # by finding the force that would be required to maintain the desired z_force given that the force is directed based
+        # # on the roll and pitch references.
+        # cphi_ctheta = jnp.clip(jnp.cos(phi) * jnp.cos(theta), 0.21, 1.0)
+
+        # Update output
+        new_output = output.replace(pwm_ref=pwm)
+
+        # Update state
+        new_state = state.replace(pidZ=pidZ, pidVz=pidVz)
+
+        # todo: DEBUG
+        new_output = DebugAttitudeControllerOutput(
+            # original
+            pwm_ref=new_output.pwm_ref,
+            phi_ref=new_output.phi_ref,
+            theta_ref=new_output.theta_ref,
+            psi_ref=new_output.psi_ref,
+            z_ref=new_output.z_ref,
+            # debug
+            z=z,
+            error=pidVz.prevError,
+            proportional=pidVz.outP,
+            derivative=pidVz.outD,
+            integral_unclipped=pidVz.outI,
+            integral=pidVz.outI,
+            z_force_from_hover=0.,
+            z_force=0.,
+            force=0.,
+            force_hover=0.,
+            pwm_unclipped=pwm_unclipped,
+            pwm_hover=self.pwm_base,
         )
         return new_state, new_output
 
@@ -459,28 +595,33 @@ class PIDParams(base.Base):
 class Sentinel(BaseNode):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._init_method = dict(start_position="inclined_landing",
-                                 inclination="random")
-
-    def set_init_method(self, start_position: str, inclination: str):
-        self._init_method = dict(start_position=start_position, inclination=inclination)
 
     def init_params(self, rng: jax.Array = None, graph_state: GraphState = None) -> SentinelParams:
+        scale = 0.5  # TODO: MODIFY
         params = SentinelParams(
+            # ctrl
+            ctrl_mapping=["z_ref", "theta_ref", "phi_ref", "psi_ref"],
             pwm_from_hover=15000,
-            pwm_range=jnp.array([10000, 60000]),
-            phi_max=onp.pi / 6,
-            theta_max=onp.pi / 6,
+            pwm_range=jnp.array([20000, 60000]),
+            phi_max=scale*onp.pi / 6,
+            theta_max=scale*onp.pi / 6,
             psi_max=0.,  # No yaw (or onp.pi?)
+            z_max=2.0,
+            # init crazyflie
+            init_cf="inclined_landing",  # inclined_landing, random, fixed
+            fixed_position=jnp.array([0.0, 0.0, 2.0]),  # Above the platform
             x_range=jnp.array([-2.0, 2.0]),
             y_range=jnp.array([-2.0, 2.0]),
             z_range=jnp.array([-0.5, 2.0]),
-            azimuth_max=0.,  # todo: not yet working....
-            polar_range=jnp.array([0., onp.pi / 7]),  # Max inclination (25.7 degrees)
-            fixed_position=jnp.array([0.0, 0.0, 2.0]),  # Above the platform
+            # init platform
+            init_plat="random",  # random, fixed
             fixed_inclination=onp.pi / 7,  # Fixed inclination (25.7 degrees)
+            azimuth_max=0.,  # todo: not yet working....
+            polar_range=jnp.array([0., scale*onp.pi / 7]),  # Max inclination (25.7 degrees)
+            # Goal
             vel_land=0.1,  # Landing velocity
             gamma=0.99,  # Discount factor
+            # Domain randomization
             noise=True,  # Whether to add noise to the measurements & perform domain randomization.
         )
         return params
@@ -492,30 +633,30 @@ class Sentinel(BaseNode):
         rngs = jax.random.split(rng, num=6)
         params = self.get_step_state(graph_state).params if graph_state else self.init_params(rng[0])
         # Start position
-        if self._init_method["start_position"] == "random":
+        if params.init_cf == "random":
             init_x = jax.random.uniform(rngs[1], shape=(), minval=params.x_range[0], maxval=params.x_range[1])
             init_y = jax.random.uniform(rngs[2], shape=(), minval=params.y_range[0], maxval=params.y_range[1])
             init_z = jax.random.uniform(rngs[3], shape=(), minval=params.z_range[0], maxval=params.z_range[1])
             init_pos = jnp.array([init_x, init_y, init_z])
-        elif self._init_method["start_position"] == "fixed":
+        elif params.init_cf == "fixed":
             init_pos = jnp.array([0.0, 0.0, 2.0])
-        elif self._init_method["start_position"] == "inclined_landing":
+        elif params.init_cf == "inclined_landing":
             init_x = jax.random.uniform(rngs[1], shape=(), minval=0.5, maxval=params.x_range[1])
             init_y = jax.random.uniform(rngs[2], shape=(), minval=-0.2, maxval=0.2)
             init_z = jax.random.uniform(rngs[3], shape=(), minval=-0.2, maxval=0.2)
             init_pos = jnp.array([init_x, init_y, init_z])
         else:
-            raise ValueError(f"Unknown start position method: {self._init_method['start_position']}")
+            raise ValueError(f"Unknown start position method: {params.init_cf}")
 
         # Inclination
-        if self._init_method["inclination"] == "random":
+        if params.init_plat == "random":
             polar = jax.random.uniform(rngs[4], shape=(), minval=params.polar_range[0], maxval=params.polar_range[1])
             azimuth = jax.random.uniform(rngs[5], shape=(), minval=-params.azimuth_max, maxval=params.azimuth_max)
-        elif self._init_method["inclination"] == "fixed":
+        elif params.init_plat == "fixed":
             polar = params.fixed_inclination
             azimuth = 0.0
         else:
-            raise ValueError(f"Unknown inclination method: {self._init_method['inclination']}")
+            raise ValueError(f"Unknown inclination method: {params.init_plat}")
         init_att_plat = spherical_to_rpy(polar, azimuth)
 
         return SentinelState(
@@ -562,7 +703,7 @@ class OdeWorld(BaseNode):
             pwm_constants=onp.array([2.130295e-11, 1.032633e-6, 5.485e-4]),
             dragxy_constants=onp.array([9.1785e-7, 0.04076521, 380.8359]),
             dragz_constants=onp.array([10.311e-7, 0.04076521, 380.8359]),
-            clip_pos=jnp.array([2., 2., 2.]),
+            clip_pos=jnp.array([2.1, 2.1, 2.1]),
             clip_vel=jnp.array([20., 20., 20.]),
         )
 
@@ -806,6 +947,376 @@ class OdeWorld(BaseNode):
         return dstate
 
 
+class MoCap(BaseNode):
+    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> MoCapParams:
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        noise = ss_sentinel.params.noise if ss_sentinel is not None else False
+        return MoCapParams(
+            noise=noise,
+            pos_std=onp.array([0.01, 0.01, 0.01], dtype=float),     # [x, y, z]
+            vel_std=onp.array([0.02, 0.02, 0.02], dtype=float),        # [xdot, ydot, zdot]
+            att_std=onp.array([0.01, 0.01, 0.01], dtype=float),     # [phi, theta, psi]
+            ang_vel_std=onp.array([0.1, 0.1, 0.1], dtype=float),        # [p, q, r]
+            pos_plat_std=onp.array([0.01, 0.01, 0.01], dtype=float),  # [x, y, z]
+            att_plat_std=onp.array([0.01, 0.01, 0.01], dtype=float),  # [phi, theta, psi]
+            vel_plat_std=onp.array([0.02, 0.02, 0.02], dtype=float),   # [xdot, ydot, zdot]
+        )
+
+    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> MoCapOutput:
+        """Default output of the node."""
+        # Randomly define some initial sensor values
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        att_plat = ss_sentinel.state.init_att_plat if ss_sentinel is not None else jnp.array([0.0, onp.pi/7, 0.0])
+        output = MoCapOutput(
+            pos=jnp.array([0.0, 0.0, 2.0]),
+            vel=jnp.array([0.0, 0.0, 0.0]),
+            att=jnp.array([0.0, 0.0, 0.0]),
+            ang_vel=jnp.array([0.0, 0.0, 0.0]),
+            pos_plat=jnp.array([0.0, 0.0, 0.0]),
+            att_plat=att_plat,
+            vel_plat=jnp.array([0.0, 0.0, 0.0]),
+        )
+        return output
+
+    def step(self, step_state: StepState) -> Tuple[StepState, MoCapOutput]:
+        """Step the node."""
+        world = step_state.inputs["world"][-1].data
+        use_noise = step_state.params.noise
+        params = step_state.params
+
+        # Sample small amount of noise to pos, vel (std=0.05), pos(std=0.005)
+        rngs = jax.random.split(step_state.rng, 8)
+        new_rng = rngs[0]
+        pos_noise = params.pos_std*jax.random.normal(rngs[1], world.pos.shape)
+        vel_noise = params.vel_std*jax.random.normal(rngs[2], world.vel.shape)
+        att_noise = params.att_std*jax.random.normal(rngs[3], world.att.shape)
+        ang_vel_noise = params.ang_vel_std*jax.random.normal(rngs[4], world.ang_vel.shape)
+        pos_plat_noise = params.pos_plat_std*jax.random.normal(rngs[5], world.pos_plat.shape)
+        att_plat_noise = params.att_plat_std*jax.random.normal(rngs[6], world.att_plat.shape)
+        vel_plat_noise = params.vel_plat_std*jax.random.normal(rngs[7], world.vel_plat.shape)
+
+        # Prepare output
+        output = MoCapOutput(
+            pos=world.pos + use_noise*pos_noise,
+            vel=world.vel + use_noise*vel_noise,
+            att=world.att + use_noise*att_noise,
+            ang_vel=world.ang_vel + use_noise*ang_vel_noise,
+            pos_plat=world.pos_plat + use_noise*pos_plat_noise + jnp.array([0.0, 0.0, 0.0]),
+            att_plat=world.att_plat + use_noise*att_plat_noise,
+            vel_plat=world.vel_plat + use_noise*vel_plat_noise,
+        )
+
+        # Update state
+        new_step_state = step_state.replace(rng=new_rng)
+
+        return new_step_state, output
+
+
+class AttitudeController(BaseNode):
+    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> AttitudeControllerParams:
+        # Get sentinel params
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        mapping = ss_sentinel.params.ctrl_mapping if ss_sentinel is not None else ["pwm_ref", "theta_ref", "phi_ref", "psi_ref"]
+        return AttitudeControllerParams(
+            rate=self.rate,
+            mapping=mapping,
+        )
+
+    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AttitudeControllerOutput:
+        ss_world = self.get_step_state(graph_state, "world")
+        hover_pwm = ss_world.params.pwm_hover if ss_world is not None else 17000
+        output = AttitudeControllerOutput(
+            pwm_ref=hover_pwm,
+            phi_ref=0.0,
+            theta_ref=0.0,
+            psi_ref=0.0,
+            z_ref=None,
+        )
+        return output
+
+    def step(self, step_state: StepState) -> Tuple[StepState, AttitudeControllerOutput]:
+        """Step the node."""
+
+        # Unpack StepState
+        _, state, params, inputs = step_state.rng, step_state.state, step_state.params, step_state.inputs
+        params: AttitudeControllerParams
+
+        # Prepare output
+        action = inputs["agent"][-1].data.action
+        new_state, output = params.to_command(state, action, z=None, vz=None, z_plat=None, att=None)
+
+        # Update state
+        new_step_state = step_state.replace(state=new_state)
+        return new_step_state, output
+
+
+class PID(AttitudeController):
+    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> PIDParams:
+        # Get sentinel params
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        mapping = ss_sentinel.params.ctrl_mapping if ss_sentinel is not None else ["z_ref", "theta_ref", "phi_ref"]
+        pwm_from_hover = ss_sentinel.params.pwm_from_hover if ss_sentinel is not None else 15000
+        # Get mass
+        ss_world = self.get_step_state(graph_state, "world")
+        mass = ss_world.params.mass if ss_world is not None else 0.03303
+        pwm_constants = ss_world.params.pwm_constants if ss_world is not None else onp.array([2.130295e-11, 1.032633e-6, 5.485e-4])
+        # PID
+        return PIDParams(
+            rate=self.rate,
+            mapping=mapping,
+            mass=mass,
+            pwm_constants=pwm_constants,
+            pwm_from_hover=pwm_from_hover,
+            # kp=8.06,  # 0.447,
+            # kd=1.91,  # 0.221
+            # ki=0.263,  # 0.246
+            # kp=1.0,  # 0.447,
+            # kd=0.4,  # 0.221
+            # ki=1.0,  # 0.246
+            # kp=8.47,  # 0.447,
+            # kd=2.283,  # 0.221
+            # ki=0.668,  # 0.246
+            # max_integral=2.01  # [N]
+            kp=0.25,
+            ki=0.25,
+            kd=0.1,
+            max_integral=0.1  # [N]
+        )
+
+    def init_state(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> PIDState:
+        return PIDState(
+            integral=0.0,
+        )
+
+    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AttitudeControllerOutput:
+        ss_world = self.get_step_state(graph_state, "world")
+        hover_pwm = ss_world.params.pwm_hover if ss_world is not None else 17000
+        output = AttitudeControllerOutput(
+            pwm_ref=hover_pwm,
+            phi_ref=0.0,
+            theta_ref=0.0,
+            psi_ref=0.0,
+            z_ref=0.0,
+        )
+        # todo: DEBUG
+        output = DebugAttitudeControllerOutput(
+            # original
+            pwm_ref=hover_pwm,
+            phi_ref=0.0,
+            theta_ref=0.0,
+            psi_ref=0.0,
+            z_ref=0.0,
+            # debug
+            z=0.0,
+            error=0.0,
+            proportional=0.0,
+            derivative=0.0,
+            integral_unclipped=0.0,
+            integral=0.0,
+            z_force_from_hover=0.0,
+            z_force=0.0,
+            force=0.0,
+            force_hover=0.0,
+            pwm_unclipped=hover_pwm,
+            pwm_hover=hover_pwm,
+        )
+        return output
+
+    def step(self, step_state: base.StepState) -> Tuple[base.StepState, AttitudeControllerOutput]:
+        """Step the node."""
+
+        # Unpack StepState
+        _, state, params, inputs = step_state.rng, step_state.state, step_state.params, step_state.inputs
+        state: PIDState
+        params: PIDParams
+
+        # Prepare output
+        action = inputs["agent"][-1].data.action
+        z = inputs["mocap"][-1].data.pos[-1]
+        vz = inputs["mocap"][-1].data.vel[-1]
+        z_plat = inputs["mocap"][-1].data.pos_plat[-1]
+        att = inputs["mocap"][-1].data.att
+        new_state, output = params.to_command(state, action, z=z, vz=vz, z_plat=z_plat, att=att)
+
+        # Update state
+        new_step_state = step_state.replace(state=new_state)
+
+        return new_step_state, output
+
+
+class ZPID(AttitudeController):
+    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> ZPIDParams:
+        # Get sentinel params
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        mapping = ss_sentinel.params.ctrl_mapping if ss_sentinel is not None else ["z_ref", "theta_ref", "phi_ref"]
+        pwm_range = ss_sentinel.params.pwm_range if ss_sentinel is not None else [20000, 60000]
+        # Get mass
+        ss_world = self.get_step_state(graph_state, "world")
+        mass = ss_world.params.mass if ss_world is not None else 0.03303
+        pwm_constants = ss_world.params.pwm_constants if ss_world is not None else onp.array([2.130295e-11, 1.032633e-6, 5.485e-4])
+        #
+        UINT16_MAX = 65_535
+        zvel_max = 1.0
+        vel_max_overhead = 1.1
+        pwm_scale = 1_000
+        z_outputLimit = jnp.maximum(0.5, zvel_max) * vel_max_overhead
+        vz_outputLimit = UINT16_MAX / 2 / pwm_scale
+        pidZ = PidObject.pidInit(kp=2.0, ki=0.5, kd=0.0, outputLimit=z_outputLimit, iLimit=1., dt=1/self.rate, samplingRate=self.rate, cutoffFreq=20., enableDFilter=False)
+        pidVz = PidObject.pidInit(kp=25., ki=15., kd=0.0, outputLimit=vz_outputLimit, iLimit=5000., dt=1/self.rate, samplingRate=self.rate, cutoffFreq=20., enableDFilter=False)
+        params = ZPIDParams(
+            UINT16_MAX=UINT16_MAX,
+            pwm_scale=pwm_scale,
+            pwm_base=force_to_pwm(pwm_constants, 9.81 * mass),
+            pwm_range=pwm_range,
+            vel_max_overhead=vel_max_overhead,
+            zvel_max=zvel_max,
+            # PID
+            pidZ=pidZ,
+            pidVz=pidVz,
+            # Action mapping
+            mapping=mapping,
+        )
+        return params
+
+    def init_state(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> ZPIDState:
+        ss = self.get_step_state(graph_state)
+        params = ss.params if ss else self.init_params(rng, graph_state)
+        state = params.reset()
+        return state
+
+    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AttitudeControllerOutput:
+        ss_world = self.get_step_state(graph_state, "world")
+        hover_pwm = ss_world.params.pwm_hover if ss_world is not None else 40000
+        output = AttitudeControllerOutput(
+            pwm_ref=hover_pwm,
+            phi_ref=0.0,
+            theta_ref=0.0,
+            psi_ref=0.0,
+            z_ref=0.0,
+        )
+        # todo: DEBUG
+        output = DebugAttitudeControllerOutput(
+            # original
+            pwm_ref=hover_pwm,
+            phi_ref=0.0,
+            theta_ref=0.0,
+            psi_ref=0.0,
+            z_ref=0.0,
+            # debug
+            z=0.0,
+            error=0.0,
+            proportional=0.0,
+            derivative=0.0,
+            integral_unclipped=0.0,
+            integral=0.0,
+            z_force_from_hover=0.0,
+            z_force=0.0,
+            force=0.0,
+            force_hover=0.0,
+            pwm_unclipped=hover_pwm,
+            pwm_hover=hover_pwm,
+        )
+        return output
+
+    def step(self, step_state: base.StepState) -> Tuple[base.StepState, AttitudeControllerOutput]:
+        """Step the node."""
+
+        # Unpack StepState
+        _, state, params, inputs = step_state.rng, step_state.state, step_state.params, step_state.inputs
+        state: PIDState
+        params: PIDParams
+
+        # Prepare output
+        action = inputs["agent"][-1].data.action
+        z = inputs["mocap"][-1].data.pos[-1]
+        vz = inputs["mocap"][-1].data.vel[-1]
+        z_plat = inputs["mocap"][-1].data.pos_plat[-1]
+        att = inputs["mocap"][-1].data.att
+        new_state, output = params.to_command(state, action, z=z, vz=vz, z_plat=z_plat, att=att)
+
+        # Update state
+        new_step_state = step_state.replace(state=new_state)
+
+        return new_step_state, output
+
+
+class RandomAgent(BaseNode):
+    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> AgentParams:
+        return AgentParams()
+
+    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AgentOutput:
+        """Default output of the node."""
+        if rng is None:
+            rng = jax.random.PRNGKey(0)
+        ss = self.get_step_state(graph_state)
+        params = ss.params if ss else self.init_params(rng, graph_state)
+        action = jax.random.uniform(rng, shape=(params.action_dim,), minval=-1.0, maxval=1.0)
+        output = AgentOutput(action=action)
+        return output
+
+    def step(self, step_state: StepState) -> Tuple[StepState, AgentOutput]:
+        """Step the node."""
+        # Unpack StepState
+        _, state, params, inputs = step_state.rng, step_state.state, step_state.params, step_state.inputs
+
+        # Force attitude references to be zero
+        new_rng, rng_action = jax.random.split(step_state.rng)
+        action = jax.random.uniform(rng_action, shape=(params.action_dim,), minval=-1.0, maxval=1.0)
+        action = action.at[1:].set(0.) if action.shape[0] > 1 else action
+        output = AgentOutput(action=action)
+
+        # Update state
+        new_step_state = step_state.replace(rng=new_rng)
+        return new_step_state, output
+
+
+class PPOAgent(RandomAgent):
+
+    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> PPOAgentParams:
+        return PPOAgentParams(
+            act_scaling=None,
+            obs_scaling=None,
+            model=None,
+            mapping=None
+        )
+
+    def init_state(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> AgentState:
+        ss = self.get_step_state(graph_state)
+        ss = ss if ss else self.init_params(rng, graph_state)
+        return AgentState(prev_action=jnp.zeros(ss.params.action_dim, dtype=jnp.float32))
+
+    def step(self, step_state: base.StepState) -> Tuple[base.StepState, AgentOutput]:
+        params = step_state.params
+        obs = self.get_observation(step_state)
+        if any([params.act_scaling is None, params.obs_scaling is None, params.model is None]):
+            new_ss, output = super().step(step_state)
+            return new_ss, output  # Random action if not initialized
+
+        # Evaluate policy
+        if params.stochastic:
+            rng = step_state.rng
+            rng, rng_policy = jax.random.split(rng)
+            action = params.get_action(obs, rng_policy)
+            new_state = AgentState(prev_action=action)
+            new_ss = step_state.replace(rng=rng, state=new_state)
+        else:
+            action = params.get_action(obs)
+            new_state = AgentState(prev_action=action)
+            new_ss = step_state.replace(state=new_state)
+        output = AgentOutput(action=action)
+        return new_ss, output
+
+    @staticmethod
+    def get_observation(step_state: base.StepState) -> jax.Array:
+        mocap = step_state.inputs["mocap"][-1].data
+        prev_action = step_state.state.prev_action
+        obs = step_state.params.get_observation(pos=mocap.pos, vel=mocap.vel, att=mocap.att,
+                                                pos_plat=mocap.pos_plat, att_plat=mocap.att_plat,
+                                                # prev_action=prev_action
+                                                )
+        return obs
+
+
 def pwm_to_force(pwm_constants: jax.typing.ArrayLike, pwm: Union[float, jax.typing.ArrayLike]) -> Union[float, jax.Array]:
     # Modified formula from Julian Forster's Crazyflie identification
     a, b, c = pwm_constants
@@ -904,318 +1415,6 @@ def spherical_to_rpy(polar, azimuth):
     rpy = R_to_rpy(R)
     return rpy
 
-# def eom2d_crazyflie_closedloop(x, u, param):
-#     # States are: [x, z, x_dot. z_dot, Theta, thrust_state]
-#     # u = [PWM_c, Theta_c] = [10000 to 60000, -1 to 1]
-#     # param = [mass, gain constant, time constant]
-#
-#     pwm_commanded = u[0]
-#     a_ss = -15.4666  # State space A
-#     b_ss = 1  # State space B
-#     c_ss = 3.5616e-5  # State space C
-#     d_ss = 7.2345e-8  # State space AD
-#     force = 4 * (c_ss * x[5] + d_ss * pwm_commanded)  # Thrust force
-#     # force *= 0.88                                                  # This takes care of the motor thrust gap sim2real
-#     pwm_drag = force_to_pwm(force)  # Symbolic PWM to approximate rotor drag
-#     dragx = 9.1785e-7 * 4 * (0.04076521 * pwm_drag + 380.8359)  # Fa,x
-#     dragz = 10.311e-7 * 4 * (0.04076521 * pwm_drag + 380.8359)  # Fa,z
-#     theta_commanded = u[1] * pi / 6  # Commanded theta in radians
-#     dx = np.array([x[2],  # x_dot
-#                    x[3],  # z_dot
-#                    (sin(x[4]) * (force - dragx * x[2])) / param[0],  # x_ddot
-#                    (cos(x[4]) * (force - dragz * x[3])) / param[0] - 9.81,  # z_ddot
-#                    (param[1] * theta_commanded - x[4]) / param[2],  # Theta_dot
-#                    a_ss * x[5] + b_ss * pwm_commanded],  # Thrust_state dot
-#                   dtype=np.float32)
-#     return dx
-
-
-class MoCap(BaseNode):
-    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> MoCapParams:
-        ss_sentinel = self.get_step_state(graph_state, "sentinel")
-        noise = ss_sentinel.params.noise if ss_sentinel is not None else False
-        return MoCapParams(
-            noise=noise,
-            pos_std=onp.array([0.01, 0.01, 0.01], dtype=float),     # [x, y, z]
-            vel_std=onp.array([0.1, 0.1, 0.1], dtype=float),        # [xdot, ydot, zdot]
-            att_std=onp.array([0.01, 0.01, 0.01], dtype=float),     # [phi, theta, psi]
-            ang_vel_std=onp.array([0.1, 0.1, 0.1], dtype=float),        # [p, q, r]
-            pos_plat_std=onp.array([0.01, 0.01, 0.01], dtype=float),  # [x, y, z]
-            att_plat_std=onp.array([0.01, 0.01, 0.01], dtype=float),  # [phi, theta, psi]
-            vel_plat_std=onp.array([0.1, 0.1, 0.1], dtype=float),   # [xdot, ydot, zdot]
-        )
-
-    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> MoCapOutput:
-        """Default output of the node."""
-        # Randomly define some initial sensor values
-        ss_sentinel = self.get_step_state(graph_state, "sentinel")
-        att_plat = ss_sentinel.state.init_att_plat if ss_sentinel is not None else jnp.array([0.0, onp.pi/7, 0.0])
-        output = MoCapOutput(
-            pos=jnp.array([0.0, 0.0, 2.0]),
-            vel=jnp.array([0.0, 0.0, 0.0]),
-            att=jnp.array([0.0, 0.0, 0.0]),
-            ang_vel=jnp.array([0.0, 0.0, 0.0]),
-            pos_plat=jnp.array([0.0, 0.0, 0.0]),
-            att_plat=att_plat,
-            vel_plat=jnp.array([0.0, 0.0, 0.0]),
-        )
-        return output
-
-    def step(self, step_state: StepState) -> Tuple[StepState, MoCapOutput]:
-        """Step the node."""
-        world = step_state.inputs["world"][-1].data
-        use_noise = step_state.params.noise
-        params = step_state.params
-
-        # Sample small amount of noise to pos, vel (std=0.05), pos(std=0.005)
-        rngs = jax.random.split(step_state.rng, 8)
-        new_rng = rngs[0]
-        pos_noise = params.pos_std*jax.random.normal(rngs[1], world.pos.shape)
-        vel_noise = params.vel_std*jax.random.normal(rngs[2], world.vel.shape)
-        att_noise = params.att_std*jax.random.normal(rngs[3], world.att.shape)
-        ang_vel_noise = params.ang_vel_std*jax.random.normal(rngs[4], world.ang_vel.shape)
-        pos_plat_noise = params.pos_plat_std*jax.random.normal(rngs[5], world.pos_plat.shape)
-        att_plat_noise = params.att_plat_std*jax.random.normal(rngs[6], world.att_plat.shape)
-        vel_plat_noise = params.vel_plat_std*jax.random.normal(rngs[7], world.vel_plat.shape)
-
-        # Prepare output
-        output = MoCapOutput(
-            pos=world.pos + use_noise*pos_noise,
-            vel=world.vel + use_noise*vel_noise,
-            att=world.att + use_noise*att_noise,
-            ang_vel=world.ang_vel + use_noise*ang_vel_noise,
-            pos_plat=world.pos_plat + use_noise*pos_plat_noise,
-            att_plat=world.att_plat + use_noise*att_plat_noise,
-            vel_plat=world.vel_plat + use_noise*vel_plat_noise,
-        )
-
-        # Update state
-        new_step_state = step_state.replace(rng=new_rng)
-
-        return new_step_state, output
-
-
-class AttitudeController(BaseNode):
-    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> AttitudeControllerParams:
-        # Get hover PWM
-        ss_world = self.get_step_state(graph_state, "world")
-        pwm_hover = ss_world.params.pwm_hover if ss_world is not None else 17000
-        # Get sentinel params
-        ss_sentinel = self.get_step_state(graph_state, "sentinel")
-        pwm_from_hover = ss_sentinel.params.pwm_from_hover if ss_sentinel is not None else 15000
-        pwm_range = ss_sentinel.params.pwm_range if ss_sentinel is not None else jnp.array([10000, 60000])
-        phi_max = ss_sentinel.params.phi_max if ss_sentinel is not None else onp.pi / 6
-        theta_max = ss_sentinel.params.theta_max if ss_sentinel is not None else onp.pi / 6
-        psi_max = ss_sentinel.params.psi_max if ss_sentinel is not None else 0.0
-        return AttitudeControllerParams(
-            rate=self.rate,
-            pwm_hover=pwm_hover,
-            pwm_range=pwm_range,
-            max_pwm_from_hover=pwm_from_hover,
-            max_phi_ref=phi_max,
-            max_theta_ref=theta_max,
-            max_psi_ref=psi_max,
-        )
-
-    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AttitudeControllerOutput:
-        ss_world = self.get_step_state(graph_state, "world")
-        hover_pwm = ss_world.params.pwm_hover if ss_world is not None else 17000
-        output = AttitudeControllerOutput(
-            pwm_ref=hover_pwm,
-            phi_ref=0.0,
-            theta_ref=0.0,
-            psi_ref=0.0,
-            z_ref=None,
-        )
-        return output
-
-    def step(self, step_state: StepState) -> Tuple[StepState, AttitudeControllerOutput]:
-        """Step the node."""
-
-        # Unpack StepState
-        _, state, params, inputs = step_state.rng, step_state.state, step_state.params, step_state.inputs
-        params: AttitudeControllerParams
-
-        # Prepare output
-        action = inputs["agent"][-1].data.action
-        new_state, output = params.to_command(state, action, z=None, vz=None, z_plat=None)
-
-        # Update state
-        new_step_state = step_state.replace(state=new_state)
-        return new_step_state, output
-
-
-class PID(AttitudeController):
-    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> PIDParams:
-        # Get base params
-        p = super().init_params(rng, graph_state)
-        # Get mass
-        ss_world = self.get_step_state(graph_state, "world")
-        mass = ss_world.params.mass if ss_world is not None else 0.03303
-        pwm_constants = ss_world.params.pwm_constants if ss_world is not None else onp.array([2.130295e-11, 1.032633e-6, 5.485e-4])
-        # PID
-        return PIDParams(
-            rate=self.rate,
-            pwm_range=p.pwm_range,
-            max_pwm_from_hover=p.max_pwm_from_hover,
-            max_z_ref=2.0,
-            min_z_ref=-2.0,
-            max_phi_ref=p.max_phi_ref,
-            max_theta_ref=p.max_theta_ref,
-            max_psi_ref=p.max_psi_ref,
-            mass=mass,
-            pwm_constants=pwm_constants,
-            # kp=8.06,  # 0.447,
-            # kd=1.91,  # 0.221
-            # ki=0.263,  # 0.246
-            kp=1.0,  # 0.447,
-            kd=0.4,  # 0.221
-            ki=1.0,  # 0.246
-            max_integral=0.1  # [N]
-            # kp=8.47,  # 0.447,
-            # kd=2.283,  # 0.221
-            # ki=0.668,  # 0.246
-            # max_integral=2.01  # [N]
-        )
-
-    def init_state(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> PIDState:
-        return PIDState(
-            integral=0.0,
-        )
-
-    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AttitudeControllerOutput:
-        ss_world = self.get_step_state(graph_state, "world")
-        hover_pwm = ss_world.params.pwm_hover if ss_world is not None else 17000
-        output = AttitudeControllerOutput(
-            pwm_ref=hover_pwm,
-            phi_ref=0.0,
-            theta_ref=0.0,
-            psi_ref=0.0,
-            z_ref=0.0,
-        )
-        # todo: DEBUG
-        output = DebugAttitudeControllerOutput(
-            # original
-            pwm_ref=hover_pwm,
-            phi_ref=0.0,
-            theta_ref=0.0,
-            psi_ref=0.0,
-            z_ref=0.0,
-            # debug
-            z=0.0,
-            error=0.0,
-            proportional=0.0,
-            derivative=0.0,
-            integral_unclipped=0.0,
-            integral=0.0,
-            z_force_from_hover=0.0,
-            z_force=0.0,
-            force=0.0,
-            force_hover=0.0,
-            pwm_unclipped=hover_pwm,
-            pwm_hover=hover_pwm,
-        )
-        return output
-
-    def step(self, step_state: base.StepState) -> Tuple[base.StepState, AttitudeControllerOutput]:
-        """Step the node."""
-
-        # Unpack StepState
-        _, state, params, inputs = step_state.rng, step_state.state, step_state.params, step_state.inputs
-        state: PIDState
-        params: PIDParams
-
-        # Prepare output
-        action = inputs["agent"][-1].data.action
-        z = inputs["mocap"][-1].data.pos[-1]
-        vz = inputs["mocap"][-1].data.vel[-1]
-        z_plat = inputs["mocap"][-1].data.pos_plat[-1]
-        new_state, output = params.to_command(state, action, z=z, vz=vz, z_plat=z_plat)
-
-        # Update state
-        new_step_state = step_state.replace(state=new_state)
-
-        return new_step_state, output
-
-
-class RandomAgent(BaseNode):
-    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> AgentParams:
-        return AgentParams()
-
-    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AgentOutput:
-        """Default output of the node."""
-        if rng is None:
-            rng = jax.random.PRNGKey(0)
-        ss = self.get_step_state(graph_state)
-        params = ss.params if ss else self.init_params(rng, graph_state)
-        action = jax.random.uniform(rng, shape=(params.action_dim,), minval=-1.0, maxval=1.0)
-        output = AgentOutput(action=action)
-        return output
-
-    def step(self, step_state: StepState) -> Tuple[StepState, AgentOutput]:
-        """Step the node."""
-        # Unpack StepState
-        _, state, params, inputs = step_state.rng, step_state.state, step_state.params, step_state.inputs
-
-        # Force attitude references to be zero
-        new_rng, rng_action = jax.random.split(step_state.rng)
-        action = jax.random.uniform(rng_action, shape=(params.action_dim,), minval=-1.0, maxval=1.0)
-        action = action.at[1:].set(0.) if action.shape[0] > 1 else action
-        output = AgentOutput(action=action)
-
-        # Update state
-        new_step_state = step_state.replace(rng=new_rng)
-        return new_step_state, output
-
-
-class PPOAgent(RandomAgent):
-
-    def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> PPOAgentParams:
-        return PPOAgentParams(
-            act_scaling=None,
-            obs_scaling=None,
-            model=None,
-        )
-
-    def step(self, step_state: base.StepState) -> Tuple[base.StepState, AgentOutput]:
-        params = step_state.params
-        obs = self.get_observation(step_state)
-        if any([params.act_scaling is None, params.obs_scaling is None, params.model is None]):
-            new_ss, output = super().step(step_state)
-            return new_ss, output  # Random action if not initialized
-
-        # Evaluate policy
-        if params.stochastic:
-            rng = step_state.rng
-            rng, rng_policy = jax.random.split(rng)
-            new_ss = step_state.replace(rng=rng)
-            action = params.get_action(obs, rng_policy)
-        else:
-            action = params.get_action(obs)
-            new_ss = step_state
-        output = AgentOutput(action=action)
-        return new_ss, output
-
-    @staticmethod
-    def get_observation(step_state: base.StepState) -> jax.Array:
-        mocap = step_state.inputs["mocap"][-1].data
-        obs = step_state.params.get_observation(pos=mocap.pos, vel=mocap.vel, att=mocap.att,
-                                                pos_plat=mocap.pos_plat, att_plat=mocap.att_plat)
-        return obs
-        # # Flatten all inputs and state of the supervisor as the observation
-        # all_data = [i.data for i in step_state.inputs.values()] + [step_state.state]
-        # all_fdata = []
-        # for data in all_data:
-        #     # Vectorize data
-        #     vdata = jax.tree_util.tree_map(lambda x: jnp.array(x).reshape(-1), data)
-        #     # Flatten pytree
-        #     fdata, _ = jax.tree_util.tree_flatten(vdata)
-        #     # Add to all_fdata
-        #     all_fdata += fdata
-        # # Concatenate all_fdata
-        # cdata = jnp.concatenate(all_fdata)
-        # return cdata
-
 
 def save(path, json_rollout):
     """Saves trajectory as an HTML text file."""
@@ -1306,8 +1505,16 @@ class Environment(rl.Environment):
         return rl.Box(low, high, shape=cdata.shape, dtype=cdata.dtype)
 
     def action_space(self, graph_state: base.GraphState) -> rl.Box:
-        ss = self.get_step_state(graph_state)
-        high = jnp.ones((ss.params.action_dim,), dtype=float)
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        ss_agent = self.get_step_state(graph_state)
+        high_mapping = dict(
+            pwm_ref=ss_sentinel.params.pwm_from_hover,
+            phi_ref=ss_sentinel.params.phi_max,
+            theta_ref=ss_sentinel.params.theta_max,
+            psi_ref=ss_sentinel.params.psi_max,
+            z_ref=ss_sentinel.params.z_max
+        )
+        high = jnp.array([high_mapping[k] for a, k in zip(range(ss_agent.params.action_dim), ss_sentinel.params.ctrl_mapping)], dtype=float)
         return rl.Box(-high, high, shape=high.shape, dtype=float)
 
     def get_observation(self, graph_state: base.GraphState) -> jax.Array:
@@ -1362,19 +1569,335 @@ class Environment(rl.Environment):
     def update_step_state(self, graph_state: base.GraphState, action: jax.Array = None) -> Tuple[base.GraphState, base.StepState]:
         """Override this method if you want to update the step state."""
         step_state = self.get_step_state(graph_state)
-        return graph_state, step_state
+        new_state = step_state.state.replace(prev_action=action)
+        new_step_state = step_state.replace(state=new_state)
+        return graph_state, new_step_state
 
 
-@struct.dataclass
-class RewardParams:
-    k1: float = 0.78  # Weights att_error
-    k2: float = 0.54  # Weights vyz_error
-    k3: float = 2.35  # Weights vx*theta
-    k4: float = 2.74  # Weights act_att_error
-    f1: float = 8.4   # Weights final att_error
-    f2: float = 1.76  # Weights final vel_error
-    fp: float = 56.5  # Weights final perfect reward
-    p: float = 0.05
+class ReferenceTracking(Environment):
+
+    def get_reward_old(self, graph_state: base.GraphState, action: jax.Array) -> Union[float, jax.Array]:
+        # Get current state
+        ss = self.get_step_state(graph_state)
+        last_mocap: MoCapOutput = ss.inputs["mocap"][-1].data
+        pos = last_mocap.pos
+        phi, theta, psi = last_mocap.att
+        x, y, z = pos
+        vx, vy, vz = last_mocap.vel
+
+        # Get denormalized action
+        p_att: PIDParams = self.get_step_state(graph_state, "attitude").params
+        output = p_att.to_output(action)
+        z_ref = output.z_ref
+        phi_ref = output.phi_ref
+        theta_ref = output.theta_ref
+        psi_ref = output.psi_ref
+
+        # Reduce difference with current reference.
+        dz_ref = z_ref - z if z_ref is not None else 0.0
+        dphi_ref = phi_ref - phi
+        dtheta_ref = theta_ref - theta
+        dpsi_ref = psi_ref - psi
+
+        # Get prev actions
+        # prev_action = ss.state.prev_action
+        # prev_output = p_att.to_output(prev_action)
+        # prev_z_ref = prev_output.z_ref
+        # prev_phi_ref = prev_output.phi_ref
+        # prev_theta_ref = prev_output.theta_ref
+        # prev_psi_ref = prev_output.psi_ref
+        # dz_ref = z_ref - prev_z_ref if z_ref is not None else 0.0
+        # dphi_ref = phi_ref - prev_phi_ref
+        # dtheta_ref = theta_ref - prev_theta_ref
+        # dpsi_ref = psi_ref - prev_psi_ref
+
+        pos_error = jnp.linalg.norm(jnp.array([x, y, z]))
+        # C = 0.1/jnp.clip(pos_error, 0.01)
+        C = 1.0
+
+        # use jnp.where to add rewards
+        cost = 0.0
+        cost = cost + pos_error
+        cost = cost + 0.2*jnp.sqrt(vx**2 + vy**2 + vz**2)
+        cost = cost + 0.3*jnp.abs(theta_ref)
+        cost = cost + 0.3*jnp.abs(phi_ref)
+        cost = cost + 0.3*jnp.abs(psi_ref)
+        cost = cost + 0.1*jnp.abs(z_ref)*C if z_ref is not None else cost
+        cost = cost + 0.3*jnp.abs(dz_ref)*C*0
+        # cost = cost + 0.5*jnp.abs(dphi_ref)*C
+        # cost = cost + 0.5*jnp.abs(dtheta_ref)*C
+        # cost = cost + 0.5*jnp.abs(dpsi_ref)*C
+
+        # Get termination conditions
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        gamma = ss_sentinel.params.gamma
+        terminated = self.get_terminated(graph_state)
+        truncated = self.get_truncated(graph_state)
+        done = jnp.logical_or(terminated, truncated)
+        cost = cost * (1-done) + done * (1/(1-gamma)) * cost
+        return -cost
+
+    def get_info(self, graph_state: base.GraphState, action: jax.Array = None) -> Dict[str, Any]:
+        return {
+            # "new_rwd": 0.,
+            "is_perfect": False,
+            "pos_perfect": False,
+            "att_perfect": False,
+            "vel_perfect": False,
+            "pos_error": 0.,
+            "att_error": 0.,
+            "vel_error": 0.,
+        }
+
+    def get_reward(self, graph_state: base.GraphState, action: jax.Array):
+        # Get current state
+        state: OdeState = self.get_step_state(graph_state, "world").state
+        x, y, z = state.pos
+        vx, vy, vz = state.vel
+        phi, theta, psi = state.att
+
+        # Get denormalized action
+        p_att: PIDParams = self.get_step_state(graph_state, "attitude").params
+        output = p_att.to_output(action)
+        z_ref = output.z_ref
+        phi_ref = output.phi_ref
+        theta_ref = output.theta_ref
+        psi_ref = output.psi_ref
+
+        # Penalize delta actions
+        ss = self.get_step_state(graph_state)
+        prev_action = ss.state.prev_action
+        prev_output = p_att.to_output(prev_action)
+        dz_ref = z_ref - prev_output.z_ref
+        dphi_ref = phi_ref - prev_output.phi_ref
+        dtheta_ref = theta_ref - prev_output.theta_ref
+        dpsi_ref = psi_ref - prev_output.psi_ref
+
+        # Position cost
+        goal_pos = jnp.array([0., 0., 1.])
+        pos = jnp.array([x, y, z])
+        error_position = jnp.linalg.norm(pos - goal_pos)
+
+        # Velocity cost
+        error_velocity = jnp.sqrt(vx**2 + vy**2 + vz**2)
+
+        # Orientation cost
+        error_angle = jnp.sqrt(phi**2 + theta**2 + psi**2)
+
+        # Action cost
+        error_angle_ref = jnp.sqrt(phi_ref**2 + theta_ref**2 + psi_ref**2)
+        error_z_ref = (z_ref - goal_pos[2])**2
+        error_action = (0.15 * error_z_ref + 0.6 * error_angle_ref)#/(jnp.maximum(error_position, 0.1))
+
+        # Delta action cost
+        error_dangle_ref = jnp.sqrt(dphi_ref**2 + dtheta_ref**2 + dpsi_ref**2)
+        error_dz_ref = jnp.sqrt(dz_ref**2)
+        error_daction = (0.2 * error_dz_ref + 0.6 * error_dangle_ref)  # Penalize delta action more.
+
+        # Bounds cost
+        out_of_bounds = False
+        out_of_bounds = jnp.logical_or(out_of_bounds, jnp.abs(x) > 1.95)
+        out_of_bounds = jnp.logical_or(out_of_bounds, jnp.abs(y) > 1.95)
+        out_of_bounds = jnp.logical_or(out_of_bounds, jnp.abs(z) > 1.95)
+        bounds_cost = 10 * out_of_bounds
+
+        # Reward params
+        rwd_params = RewardParams()
+        k1, k2, k3, k4 = rwd_params.k1, rwd_params.k2, rwd_params.k3, rwd_params.k4
+        f1, f2 = rwd_params.f1, rwd_params.f2
+        fp = rwd_params.fp
+        p = rwd_params.p*2
+
+        # Total cost
+        # todo: add error_daction
+        # eps_cost = error_position + 0.2 * error_velocity + 0.1 * error_angle + error_action + bounds_cost
+        eps_cost = error_position + 0.2 * error_velocity + 0.1 * error_angle + error_action + error_daction + bounds_cost
+        final_cost = error_position + f1 * error_angle + f2 * error_velocity
+
+        # Is perfect
+        pos_perfect = (error_position < (p * 1.5))
+        att_perfect = (error_angle < (p * 1))
+        vel_perfect = (error_velocity < (p * 5))
+        angle_ref_perfect = (error_angle_ref < (p * 1))
+        z_ref_perfect = (error_z_ref < (p * 0.5))
+        is_perfect = pos_perfect * att_perfect * vel_perfect * angle_ref_perfect * z_ref_perfect
+        perfect_cost = -fp * is_perfect
+
+        # Get termination conditions
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        gamma = ss_sentinel.params.gamma
+        terminated = False # pos_perfect * att_perfect * vel_perfect * angle_ref_perfect * z_ref_perfect
+        truncated = self.get_truncated(graph_state)
+        done = jnp.logical_or(terminated, truncated)
+        cost = eps_cost + \
+               0 * done * ((1 - terminated) * (1 / (1 - gamma)) + terminated) * final_cost + \
+               0 * done * terminated * perfect_cost
+
+        # Info
+        info = {
+            "is_perfect": is_perfect,
+            "pos_perfect": pos_perfect,
+            "att_perfect": att_perfect,
+            "vel_perfect": vel_perfect,
+            "pos_error": error_position,
+            "att_error": error_angle,
+            "vel_error": error_velocity,
+        }
+        return -cost, truncated, terminated, info
+
+    def step(self, graph_state: base.GraphState, action: jax.Array):
+        """
+        Step the environment.
+        Can be overridden to provide custom step behavior.
+
+        :param graph_state: The current graph state.
+        :param action: The action to take.
+        :return: Tuple of (graph_state, observation, reward, terminated, truncated, info)
+        """
+        # Convert action to output
+        output = self.get_output(graph_state, action)
+        step_state = self.get_step_state(graph_state)
+        # Step the graph
+        gs_pre, _ = self.graph.step(graph_state, step_state, output)
+        # Get reward, done flags, and some info
+        reward, truncated, terminated, info_rwd = self.get_reward(gs_pre, action)
+        # Update step_state
+        gs_post, _ = self.update_step_state(gs_pre, action)
+        # Get observation
+        obs = self.get_observation(gs_post)
+        # Get info
+        info = self.get_info(gs_post, action)
+        info.update(info_rwd)
+        return gs_post, obs, reward, terminated, truncated, info
+
+
+class ReferenceTrackingTerminate(Environment):
+
+    def get_info(self, graph_state: base.GraphState, action: jax.Array = None) -> Dict[str, Any]:
+        return {
+            # "new_rwd": 0.,
+            "is_perfect": False,
+            "pos_perfect": False,
+            "att_perfect": False,
+            "vel_perfect": False,
+            "pos_error": 0.,
+            "att_error": 0.,
+            "vel_error": 0.,
+        }
+
+    def get_reward(self, graph_state: base.GraphState, action: jax.Array):
+        # Get current state
+        state: OdeState = self.get_step_state(graph_state, "world").state
+        x, y, z = state.pos
+        vx, vy, vz = state.vel
+        phi, theta, psi = state.att
+
+        # Get denormalized action
+        p_att: PIDParams = self.get_step_state(graph_state, "attitude").params
+        output = p_att.to_output(action)
+        z_ref = output.z_ref
+        phi_ref = output.phi_ref
+        theta_ref = output.theta_ref
+        psi_ref = output.psi_ref
+
+        # Position cost
+        goal_pos = jnp.array([0., 0., 1.])
+        pos = jnp.array([x, y, z])
+        error_position = jnp.linalg.norm(pos - goal_pos)
+
+        # Velocity cost
+        error_velocity = jnp.sqrt(vx**2 + vy**2 + vz**2)
+
+        # Orientation cost
+        error_angle = jnp.sqrt(phi**2 + theta**2 + psi**2)
+
+        # Action cost
+        error_angle_ref = jnp.sqrt(phi_ref**2 + theta_ref**2 + psi_ref**2)
+        error_z_ref = (z_ref - goal_pos[2])**2
+        error_action = 0.15 * error_z_ref + 0.6 * error_angle_ref#/(jnp.maximum(error_position, 0.1))
+
+        # Bounds cost
+        out_of_bounds = False
+        out_of_bounds = jnp.logical_or(out_of_bounds, jnp.abs(x) > 1.95)
+        out_of_bounds = jnp.logical_or(out_of_bounds, jnp.abs(y) > 1.95)
+        out_of_bounds = jnp.logical_or(out_of_bounds, jnp.abs(z) > 1.95)
+        bounds_reward = 10 * out_of_bounds
+
+        # Reward params
+        # k1: float = 0.78  # Weights att_error
+        # k2: float = 0.54  # Weights vyz_error
+        # k3: float = 2.35  # Weights vx*theta
+        # k4: float = 2.74  # Weights act_att_error
+        # f1: float = 8.4  # Weights final att_error
+        # f2: float = 1.76  # Weights final vel_error
+        # fp: float = 56.5  # Weights final perfect reward
+        # p: float = 0.05
+        rwd_params = RewardParams()
+        k1, k2, k3, k4 = rwd_params.k1, rwd_params.k2, rwd_params.k3, rwd_params.k4
+        f1, f2 = rwd_params.f1, rwd_params.f2
+        fp = rwd_params.fp
+        p = rwd_params.p*2
+
+        # Total cost
+        # eps_reward = -1 * error_position - 0.2 * error_velocity - 0.1 * error_angle - error_action - bounds_reward
+        eps_cost = error_position + k1*error_angle + k2*error_velocity + k4*error_action #+ bounds_reward
+        final_cost = error_position + f1*error_angle + f2*error_velocity
+
+        # Is perfect
+        pos_perfect = (error_position < (p * 1.5))
+        att_perfect = (error_angle < (p * 1))
+        vel_perfect = (error_velocity < (p * 5))
+        angle_ref_perfect = (error_angle_ref < (p * 1))
+        z_ref_perfect = (error_z_ref < (p * 0.5))
+        is_perfect = pos_perfect * att_perfect * vel_perfect * angle_ref_perfect * z_ref_perfect
+        perfect_cost = -fp * is_perfect
+
+        # Get termination conditions
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        gamma = ss_sentinel.params.gamma
+        terminated = pos_perfect * att_perfect * vel_perfect * angle_ref_perfect * z_ref_perfect
+        truncated = self.get_truncated(graph_state)
+        done = jnp.logical_or(terminated, truncated)
+        cost = eps_cost + \
+               done * ((1 - terminated) * (1 / (1 - gamma)) + terminated) * final_cost + \
+               done * terminated * perfect_cost
+
+        # Info
+        info = {
+            "is_perfect": is_perfect,
+            "pos_perfect": pos_perfect,
+            "att_perfect": att_perfect,
+            "vel_perfect": vel_perfect,
+            "pos_error": error_position,
+            "att_error": error_angle,
+            "vel_error": error_velocity,
+        }
+        return -cost, truncated, terminated, info
+
+    def step(self, graph_state: base.GraphState, action: jax.Array):
+        """
+        Step the environment.
+        Can be overridden to provide custom step behavior.
+
+        :param graph_state: The current graph state.
+        :param action: The action to take.
+        :return: Tuple of (graph_state, observation, reward, terminated, truncated, info)
+        """
+        # Convert action to output
+        output = self.get_output(graph_state, action)
+        step_state = self.get_step_state(graph_state)
+        # Step the graph
+        gs_pre, _ = self.graph.step(graph_state, step_state, output)
+        # Get reward, done flags, and some info
+        reward, truncated, terminated, info_rwd = self.get_reward(gs_pre, action)
+        # Update step_state
+        gs_post, _ = self.update_step_state(gs_pre, action)
+        # Get observation
+        obs = self.get_observation(gs_post)
+        # Get info
+        info = self.get_info(gs_post, action)
+        info.update(info_rwd)
+        return gs_post, obs, reward, terminated, truncated, info
 
 
 class InclinedLanding(Environment):
@@ -1421,14 +1944,13 @@ class InclinedLanding(Environment):
         att_ref = jnp.array([phi_ref, theta_ref, psi_ref])
 
         # Get current state
-        ss = self.get_step_state(graph_state)
-        last_mocap: MoCapOutput = ss.inputs["mocap"][-1].data
+        world_state: OdeState = self.get_step_state(graph_state, "world").state
         pos_target = jnp.array([0., 0., 0.])  # Final position target
 
         # Get rotation matrices
         R_cf2w_ref = rpy_to_R(att_ref)
-        R_cf2w = rpy_to_R(last_mocap.att)
-        R_is2w = rpy_to_R(last_mocap.att_plat)
+        R_cf2w = rpy_to_R(world_state.att)
+        R_is2w = rpy_to_R(world_state.att_plat)
         z_cf_ref = R_cf2w_ref[:, 2]
         z_cf = R_cf2w[:, 2]
         z_is = R_is2w[:, 2]  # Final attitude target
@@ -1436,33 +1958,40 @@ class InclinedLanding(Environment):
         # Calculate attitude error
         att_error = jnp.arccos(jnp.clip(jnp.dot(z_cf, z_is), -1, 1))  # Minimize angle between two z-axis vectors
         act_att_error = jnp.arccos(jnp.clip(jnp.dot(z_cf_ref, z_is), -1, 1))  # Minimize angle between two z-axis vectors
-        # att_error = 1-jnp.dot(z_cf, z_is)  # Minimize angle between two z-axis vectors
-        # act_att_error = 1-jnp.dot(z_cf_ref, z_is)  # Minimize angle between two z-axis vectors
 
         # Calculate components of the landing velocity
         ss_sentinel = self.get_step_state(graph_state, "sentinel")
-        # vel_land = jnp.dot(z_is, last_mocap.vel)  # Calculate component in direction of z-axis
-        vel_land = last_mocap.vel
         vel_land_ref = -z_is * ss_sentinel.params.vel_land  # target is landing velocity in negative direction of platform z-axis
-        vel_land_error = jnp.linalg.norm(vel_land_ref-vel_land)
+        vel_land_error = jnp.linalg.norm(vel_land_ref-world_state.vel)
         z_cf_xy = jnp.array([z_cf[0], z_cf[1], 0]) / jnp.linalg.norm(jnp.array([z_cf[0], z_cf[1], 0]))  # Project z-axis to xy-plane
-        vel_underact = 0.5*jnp.clip(jnp.dot(z_cf_xy, last_mocap.vel), None, 0)   # Promote underactuated motion (i.e. velocity in negative z-axis)
+        vel_underact = 0.5*jnp.clip(jnp.dot(z_cf_xy, world_state.vel), None, 0)   # Promote underactuated motion (i.e. velocity in negative z-axis)
+
+        # @struct.dataclass
+        # class RewardParams:
+        #     k1: float = 0.78  # Weights att_error
+        #     k2: float = 0.54  # Weights vyz_error
+        #     k3: float = 2.35  # Weights vx*theta
+        #     k4: float = 2.74  # Weights act_att_error
+        #     f1: float = 8.4  # Weights final att_error
+        #     f2: float = 1.76  # Weights final vel_error
+        #     fp: float = 56.5  # Weights final perfect reward
+        #     p: float = 0.05
 
         # running cost
         k1, k2, k3, k4 = self._rwd_params.k1, self._rwd_params.k2, self._rwd_params.k3, self._rwd_params.k4
         f1, f2 = self._rwd_params.f1, self._rwd_params.f2
         fp = self._rwd_params.fp
         p = self._rwd_params.p
-        pos_error = jnp.linalg.norm(pos_target - last_mocap.pos)
-        vxyz_error = jnp.linalg.norm(last_mocap.vel - jnp.dot(z_is, last_mocap.vel) * z_is)
-        act_z_error = z_ref ** 2
-        pos_perfect = (pos_error < (p * 1.5))
-        att_perfect = (att_error < (p * 1))
-        vel_perfect = (vel_land_error < (p * 5))
+        pos_error = jnp.linalg.norm(pos_target - world_state.pos)
+        vxyz_error = jnp.linalg.norm(world_state.vel - jnp.dot(z_is, world_state.vel) * z_is)
+        act_z_error = z_ref ** 2 # todo: * 0
+        pos_perfect = (pos_error < (p * 1.5))#*0.66))
+        att_perfect = (att_error < (p * 1))#*3))
+        vel_perfect = (vel_land_error < (p * 5))#*2))
         is_perfect = pos_perfect * att_perfect * vel_perfect
         cost_eps = pos_error + k1*att_error + k2*vxyz_error + k3*vel_underact + k1*act_att_error + k4*act_z_error
         cost_final = pos_error + f1*att_error + f2*vel_land_error
-        cost_perfect = -fp * is_perfect
+        cost_perfect = -fp * is_perfect  #*2
 
         # Get termination conditions
         gamma = ss_sentinel.params.gamma
@@ -1481,72 +2010,6 @@ class InclinedLanding(Environment):
             "vel_error": vel_land_error,
         }
 
-        return -cost, truncated, terminated, info
-
-    def get_old_reward(self, graph_state: base.GraphState, action: jax.Array):
-        # Get denormalized action
-        p_att: PIDParams = self.get_step_state(graph_state, "attitude").params
-        output = p_att.to_output(action)
-        z_ref = output.z_ref
-        theta_ref = output.theta_ref
-        phi_ref = output.phi_ref
-        psi_ref = output.psi_ref
-        att_ref = jnp.array([phi_ref, theta_ref, psi_ref])
-
-        # Get current state
-        ss = self.get_step_state(graph_state)
-        last_mocap: MoCapOutput = ss.inputs["mocap"][-1].data
-        _, theta, _ = last_mocap.att
-        inclination = last_mocap.inclination
-        vx, vy, vz = last_mocap.vel
-
-        # Calculate components of the landing velocity
-        ss_sentinel = self.get_step_state(graph_state, "sentinel")
-        vx_land = -ss_sentinel.params.vel_land * jnp.sin(inclination)
-        vz_land = -ss_sentinel.params.vel_land * jnp.cos(inclination)
-        vel_target = jnp.array([vx_land, 0., vz_land])  # Final velocity target
-        pos_target = jnp.array([0., 0., 0.])  # Final position target
-        att_target = jnp.array([0., inclination, 0.])  # Final attitude target
-
-        # running cost
-        k1, k2, k3, k4 = self._rwd_params.k1, self._rwd_params.k2, self._rwd_params.k3, self._rwd_params.k4
-        f1, f2 = self._rwd_params.f1, self._rwd_params.f2
-        fp = self._rwd_params.fp
-        p = self._rwd_params.p
-        pos_error = jnp.linalg.norm(pos_target - last_mocap.pos)
-        att_error = jnp.linalg.norm(att_target - last_mocap.att)
-        act_att_error = jnp.linalg.norm(att_target - att_ref)
-        vyz_error = vy**2 + vz**2
-        vx_error = jnp.clip(vx*theta, None, 0)
-        vel_error = jnp.linalg.norm(vel_target - last_mocap.vel)
-        act_z_error = z_ref**2
-        pos_perfect = (pos_error < (p * 1))
-        att_perfect = (att_error < (p * 1))
-        vel_perfect = (vel_error < (p * 10))
-        is_perfect = pos_perfect * att_perfect * vel_perfect
-        cost_eps = pos_error + k1*att_error + k2*vyz_error + k3*vx_error + k1*act_att_error + k4*act_z_error
-        cost_final = pos_error + f1*att_error + f2*vel_error
-        cost_perfect = -fp * is_perfect
-
-        # Get termination conditions
-        gamma = ss_sentinel.params.gamma
-        terminated = self.get_terminated(graph_state)
-        truncated = self.get_truncated(graph_state)
-        done = jnp.logical_or(terminated, truncated)
-        cost = cost_eps + done * ((1-terminated) * (1/(1-gamma)) + terminated) * cost_final + done * terminated * cost_perfect
-
-        new_rwd, _, _, _ = self.get_new_reward(graph_state, action)
-
-        info = {
-            "new_rwd": new_rwd,
-            "is_perfect": is_perfect,
-            "pos_perfect": pos_perfect,
-            "att_perfect": att_perfect,
-            "vel_perfect": vel_perfect,
-            "pos_error": pos_error,
-            "att_error": att_error,
-            "vel_error": vel_error,
-        }
         return -cost, truncated, terminated, info
 
     def get_info(self, graph_state: base.GraphState, action: jax.Array = None) -> Dict[str, Any]:
@@ -1572,13 +2035,15 @@ class InclinedLanding(Environment):
         """
         # Convert action to output
         output = self.get_output(graph_state, action)
-        gs_pre, step_state = self.update_step_state(graph_state, action)
+        step_state = self.get_step_state(graph_state)
         # Step the graph
-        gs_post, _ = self.graph.step(graph_state, step_state, output)
+        gs_pre, _ = self.graph.step(graph_state, step_state, output)
+        # Get reward, done flags, and some info
+        reward, truncated, terminated, info_rwd = self.get_reward(gs_pre, action)
+        # Update step_state
+        gs_post, _ = self.update_step_state(gs_pre, action)
         # Get observation
         obs = self.get_observation(gs_post)
-        # Get reward, done flags, and some info
-        reward, truncated, terminated, info_rwd = self.get_reward(gs_post, action)
         # Get info
         info = self.get_info(gs_post, action)
         info.update(info_rwd)
@@ -1595,8 +2060,8 @@ def contact_distance(mjx_model, mjx_data, pos, att, pos_plat, att_plat):
         raise ValueError(f"Unsupported qpos shape: {mjx_data.qpos.shape}")
     mjx_d = mjx_data.replace(qpos=qpos)
     mjx_d = mjx.forward(mjx_model, mjx_d)
-    # terminated = mjx_d.contact.dist.min() < threshold
-    return mjx_d.contact.dist.min()
+    dmin = mjx_d.contact.dist.min()
+    return dmin
 
 
 def get_qpos(pos, att, pos_plat, att_plat):
@@ -1628,6 +2093,7 @@ if __name__ == "__main__":
     # thrust_state = B/(-A) * static_pwm
     # dynamic_force = 4 * (C * thrust_state + D * static_pwm)  # Thrust force
     # dynamic_pwm = force_to_pwm(pwm_constants, dynamic_force)
+    # print(f"static_force: {static_force}, dynamic_force: {dynamic_force}")
     # print(f"Static PWM: {static_pwm}, Dynamic PWM: {dynamic_pwm}")
 
     # Initialize system
@@ -1669,8 +2135,8 @@ if __name__ == "__main__":
     # pos_plat = pos_plat.at[:, 1].set(jnp.linspace(0., -1., num_samples))
     att_plat = jnp.zeros((num_samples, 3), dtype=float)
     att_plat = att_plat.at[:, 0].set(jnp.linspace(0., onp.pi / 2, num_samples))
-    att_plat = att_plat.at[:, 1].set(jnp.linspace(0., onp.pi / 2, num_samples))
-    att_plat = att_plat.at[:, 2].set(jnp.linspace(0., onp.pi, num_samples))
+    att_plat = att_plat.at[:, 1].set(jnp.linspace(0.02, 0.02, num_samples))
+    att_plat = att_plat.at[:, 2].set(jnp.linspace(0., 0, num_samples))
 
     def _in_platform_frame(pos, att, pos_plat, att_plat):
         vel = jnp.zeros_like(pos)
@@ -1679,6 +2145,7 @@ if __name__ == "__main__":
 
         pos_is = obs[:3]
         att_is = obs[6:9]
+        polar = obs[9]
         pos_plat_is = pos_plat - pos_plat
         att_plat_is = jnp.array([0, 0, 0])
         # vel_is = obs[3:6]
@@ -1691,13 +2158,13 @@ if __name__ == "__main__":
 
         # Set platform state
         quat_plat = rpy_to_wxyz(att_plat_is)
-        inclination = jnp.array([att_plat[1]])  # todo: is this correct?
+        inclination = jnp.array([polar])
         platform = jnp.concatenate([pos_plat_is, quat_plat, inclination])
 
         # Set platform state
         pos_cor = pos_plat_is
         quat_cor = rpy_to_wxyz(att_plat_is)
-        inclination_cor = jnp.array([att_plat[1]])  # todo: is this correct?
+        inclination_cor = jnp.array([polar])
         platform_cor = jnp.concatenate([pos_cor, quat_cor, inclination_cor])
 
         # Set initial state
@@ -1779,9 +2246,7 @@ if __name__ == "__main__":
     att = jnp.array([w, x, y, z])
 
     # Set initial state
-    # extra = jnp.array([0., 0.])
     extra = jnp.array([0.])
-    # extra = jnp.array([])
     qpos = jnp.concatenate([xyz, jnp.array([inclination]), pos, att, extra])
     qvel = jnp.zeros_like(qpos)
 
