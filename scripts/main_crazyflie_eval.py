@@ -54,8 +54,8 @@ def _plot_results(rollout):
     axes[0, 2].legend()
     axes[0, 2].set_title("Position")
     axes[0, 3].plot(vel[:, 0], label="vx", color="blue")
-    axes[0, 3].plot(vel[:, 1], label="vx", color="orange")
-    axes[0, 3].plot(vel[:, 2], label="vx", color="green")
+    axes[0, 3].plot(vel[:, 1], label="vy", color="orange")
+    axes[0, 3].plot(vel[:, 2], label="vz", color="green")
     axes[0, 3].legend()
     axes[0, 3].set_title("Velocity")
 

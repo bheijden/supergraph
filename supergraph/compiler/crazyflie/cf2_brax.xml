@@ -76,8 +76,7 @@
       <geom name="platform_goal" type="sphere" rgba="1 0 0 1" pos="0 0 0" size="0.005" contype="0" conaffinity="0"/>
       <body name="platform" pos="0.0 0.0 0.0" >
         <inertial euler="0 0 0" pos="0 0 0" mass="1e0" diaginertia="1e0 1e0 1e0"/>
-          <geom name="platform_geom" rgba="0.5 0.2 0.2 1" type="box" pos="0 0 -0.0225" size="0.20 0.30 0.02" contype="2" conaffinity="1" condim="3"/>
-          <geom name="patch_geom" rgba="0.35 0.35 0.35 1" type="box" pos="0 0 -0.005" size="0.05 0.05 0.005" contype="0" conaffinity="0" condim="3"/>
+          <geom name="platform_geom" rgba="0.5 0.2 0.2 1" type="box" pos="0 0 -0.025" size="0.30 0.25 0.02" contype="2" conaffinity="1" condim="3"/>
           <joint name="platform_pitch" type="hinge" pos="0 0 0" axis="0 1 0" limited="false" damping="0.5"/>
       </body>
     </body>
@@ -89,7 +88,7 @@
       <geom name="_pole" type="cylinder" pos="0 0 -1.05" size="0.03 1.0" rgba="0.2 0.2 0.2 1" contype="0" conaffinity="0" condim="3"/>
       <body name="_platform" pos="0.0 0.0 0.0" >
         <inertial euler="0 0 0" pos="0 0 0" mass="1e0" diaginertia="1e0 1e0 1e0"/>
-          <geom name="_platform_geom" rgba="0.2 0.2 0.2 1" type="box" pos="0 0 -0.0225" size="0.20 0.30 0.02" contype="2" conaffinity="1" condim="3"/>
+          <geom name="_platform_geom" rgba="0.2 0.2 0.2 1" type="box" pos="0 0 -0.0225" size="0.30 0.25 0.02" contype="2" conaffinity="1" condim="3"/>
           <geom name="_patch_geom" rgba="0.35 0.35 0.35 1" type="box" pos="0 0 -0.005" size="0.05 0.05 0.005" contype="0" conaffinity="0" condim="3"/>
           <joint name="_platform_pitch" type="hinge" pos="0 0 0" axis="0 1 0" limited="false" damping="0.5"/>
       </body>

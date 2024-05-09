@@ -14,7 +14,7 @@
       <inertial euler="0 0 0" pos="0 0 0" mass="1e-06" diaginertia="1e-06 1e-06 1e-06"/>
       <body name="_platform" pos="0.0 0.0 0.0" >
         <inertial euler="0 0 0" pos="0 0 0" mass="1e0" diaginertia="1e0 1e0 1e0"/>
-          <geom name="_platform_geom" rgba="0.2 0.2 0.2 1" type="box" pos="0 0 -0.02" size="0.20 0.30 0.02" contype="4" conaffinity="1" condim="3"/>
+          <geom name="_platform_geom" rgba="0.2 0.2 0.2 1" type="box" pos="0 0 -0.02" size="0.30 0.25 0.02" contype="4" conaffinity="1" condim="3"/>
           <joint name="_platform_pitch" type="hinge" pos="0 0 0" axis="0 1 0" limited="false" damping="0.5"/>
       </body>
     </body>
@@ -22,7 +22,7 @@
     <body name="cf2" pos="0 0 0">
       <freejoint/>
       <inertial pos="0 0 0" mass="0.027" diaginertia="2.3951e-5 2.3951e-5 3.2347e-5"/>
-      <geom name="cf_collision" type="box" rgba="0 1 0 1" pos="0 0 0.012" size="0.015 0.015 0.011" contype="1" conaffinity= "6"/>
+      <geom name="cf_collision" type="box" rgba="0 1 0 1" pos="0 0 0.012" size="0.025 0.025 0.011" contype="1" conaffinity= "6"/>
       <body name="cf_mocap" pos="0.0 0.0 0.013" >
         <inertial euler="0 0 0" pos="0 0 0" mass="1e-09" diaginertia="1e-09 1e-09 1e-09"/>
         <joint name="cf_mocap" type="slide" axis="1 0 0" range="-0.01 0.01"/>

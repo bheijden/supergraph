@@ -116,6 +116,35 @@ ref_tracking = ppo.Config(
 # Multi-inclination (noise, mass variation, vary initial x, y, z)
 multi_inclination = InclinedLandingConfig(
     LR=5e-4,
+    NUM_ENVS=128,  # todo: 128?
+    NUM_STEPS=64,  # todo: 128?
+    TOTAL_TIMESTEPS=2e6,  # todo: a lot.
+    UPDATE_EPOCHS=16,  # todo: a lot --> 8?
+    NUM_MINIBATCHES=8,
+    GAMMA=0.978,
+    GAE_LAMBDA=0.951,
+    CLIP_EPS=0.131,
+    ENT_COEF=0.01,
+    VF_COEF=0.899,
+    MAX_GRAD_NORM=0.87,
+    NUM_HIDDEN_LAYERS=2,
+    NUM_HIDDEN_UNITS=64,
+    KERNEL_INIT_TYPE="xavier_uniform",
+    HIDDEN_ACTIVATION="tanh",
+    STATE_INDEPENDENT_STD=True,
+    SQUASH=True,
+    ANNEAL_LR=False,
+    NORMALIZE_ENV=True,
+    DEBUG=False,
+    VERBOSE=True,
+    FIXED_INIT=False,
+    OFFSET_STEP=True,
+    NUM_EVAL_ENVS=20,
+    EVAL_FREQ=20,
+)
+
+term_ref_tracking = InclinedLandingConfig(
+    LR=5e-4,
     NUM_ENVS=128,
     NUM_STEPS=64,
     TOTAL_TIMESTEPS=10e6,
@@ -143,20 +172,20 @@ multi_inclination = InclinedLandingConfig(
     EVAL_FREQ=20,
 )
 
-
-term_ref_tracking = InclinedLandingConfig(
-    LR=5e-4,
+# Multi-inclination (noise, mass variation, vary initial x, y, z, azimuth)
+multi_inclination_azi = InclinedLandingConfig(
+    LR=9.23e-4,
     NUM_ENVS=128,
     NUM_STEPS=64,
-    TOTAL_TIMESTEPS=10e6,
+    TOTAL_TIMESTEPS=4e6,
     UPDATE_EPOCHS=16,
     NUM_MINIBATCHES=8,
-    GAMMA=0.978,
-    GAE_LAMBDA=0.951,
+    GAMMA=0.9844,
+    GAE_LAMBDA=0.939,
     CLIP_EPS=0.131,
     ENT_COEF=0.01,
-    VF_COEF=0.899,
-    MAX_GRAD_NORM=0.87,
+    VF_COEF=0.756,
+    MAX_GRAD_NORM=0.76,
     NUM_HIDDEN_LAYERS=2,
     NUM_HIDDEN_UNITS=64,
     KERNEL_INIT_TYPE="xavier_uniform",

@@ -22,25 +22,24 @@ from supergraph.compiler.graph import Graph
 
 
 if __name__ == "__main__":
+    # todo: add platform velocity.
+    #  - Add velocity to get_observation
+    #  - Double check reward if we need to modify when plat_pos is not zero.
+    #  - Add constant velocity to the platform.
+    #  - Change clipping to be in larger range centered aruond the platform.
+    # todo: CF is unstable when pitching & rolling simultaneously
+    #  - Penalize abrupt changes in both roll & pitch behavior
+    #  - LPF Roll/pitch references.
+    # todo: Reduce bounce when landing.
+    #  - Check if motors are turned off too quickly
+    #  - Check if landing velocity is too high
     # todo: stream vicon quaternions?
-    # todo: Initialize from same height as platform.
-    # todo: Incentivize approaching from above.
-    # todo: Improve RL performance in simulation
-    # todo: increase agent rate to 50 (or 80 in real-world?)
-    # todo: Make ZPID controller more aggressive (increase P, I)
-    # todo: account for platform z-offset in combination of get_observation() and get_action().
-    # todo: avoid using hardcoded yaw=0. in the PPOAgentParams.get_observation() method
-    # todo: check intrinsic rpy conventions in supergraph.compiler.crazyflie.nodes:
-    #       - spherical_to_R --> Check order Ry * Rz or reversed?
     # todo: real experiments checklist
-    #       - Train with variations in yaw --> somehow, azimuth is also rolling the platform...
     #       - Check tracking offset Vicon vs. simulated Mocap
     #           - Simulation: [0,0,0] == perfect landing --> pos_offset=[0,0,0]
     #           - Real: [0,0,0.0193] == real landing --> pos_offset=[0,0,-0.0193]
     #       - Add yaw controller that fixes yaw to zero in the platform frame.
-    # todo: Truncation in reference tracking policy
     # todo: Remove DebugAttitudeControllerOutput
-    # todo: Save best policy
 
     # Create nodes
     world = cf.nodes.OdeWorld(name="world", rate=50, color="grape", order=4)
@@ -128,7 +127,10 @@ if __name__ == "__main__":
 
     # config = cf.ppo.ref_tracking
     # config = cf.ppo.term_ref_tracking
-    config = cf.ppo.multi_inclination
+    # config = cf.ppo.multi_inclination
+    config = cf.ppo.multi_inclination_azi
+    # config = config.replace(NUM_ENVS=64, NUM_STEPS=128, TOTAL_TIMESTEPS=10e6,
+    #                         UPDATE_EPOCHS=8, NUM_MINIBATCHES=8)
     train = functools.partial(ppo.train, env)
     train = jax.jit(train)
     with timer("train"):
@@ -168,7 +170,6 @@ if __name__ == "__main__":
     rollout = graph.rollout(gs)
     print("Rollout done!")
 
-    actions = rollout.nodes["attitude"].inputs["agent"][:, -1].data.action
     ode_state = rollout.nodes["mocap"].inputs["world"][:, -1].data
     att = ode_state.att
     pos = ode_state.pos
@@ -208,77 +209,4 @@ if __name__ == "__main__":
     # In such cases, comment-out all but one HTML(pendulum.render(rollout))
     rollout_json = cf.render(rollout)
     cf.save("./main_crazyflie.html", rollout_json)
-    plt.show()
-    exit()
-
-    # Rollout
-    rollout = [gs]
-    graph_run = jax.jit(graph.run)(gs)
-    pbar = tqdm.tqdm(range(graph.max_steps))
-    for _ in pbar:
-        gs = graph.run(gs)  # Run the graph (incl. the agent's step() method)
-        rollout.append(gs)
-        # We can access the agent's state directly (this is the state *after* the step() method was called)
-        ss = gs.nodes["agent"]
-        # Print the current time, sensor reading, and action
-        pbar.set_postfix_str(f"step: {ss.seq}, ts_start: {ss.ts:.2f}")
-    pbar.close()
-
-    # Html visualization may not work properly, if it's already rendering somewhere else.
-    # In such cases, comment-out all but one HTML(pendulum.render(rollout))
-    rollout_json = cf.render(rollout)
-    cf.save("./main_crazyflie.html", rollout_json)
-    exit()
-
-    # Initialize supergraph
-    rng = jax.random.PRNGKey(0)
-    gs = graph.init(rng, order=("sentinel", "world"))
-
-    # However, now we will repeatedly call the run() method, which will call the step() method of the agent node.
-    # In our case, the agent node is a random agent, so it will also generate random actions.
-    rollout = [gs]
-    pbar = tqdm.tqdm(range(graph.max_steps))
-    for _ in pbar:
-        gs = graph.run(gs)  # Run the graph (incl. the agent's step() method)
-        rollout.append(gs)
-        # We can access the agent's state directly (this is the state *after* the step() method was called)
-        ss = gs.nodes["agent"]
-        # Print the current time, sensor reading, and action
-        pbar.set_postfix_str(f"step: {ss.seq}, ts_start: {ss.ts:.2f}")
-    pbar.close()
-
-    # Html visualization may not work properly, if it's already rendering somewhere else.
-    # In such cases, comment-out all but one HTML(pendulum.render(rollout))
-    rollout_json = cf.render(rollout)
-    cf.save("./main_crazyflie.html", rollout_json)
-    exit()
-
-    # Test vmap
-    rngs = jax.random.split(rng, num=10)
-    graph_init = functools.partial(graph.init, randomize_eps=True, order=("world",))
-    graph_init_jv = jax.jit(jax.vmap(graph_init, in_axes=0))
-    with timer("graph_init_jv[jit]"):
-        _ = graph_init_jv(rngs)
-    with timer("graph_init_jv", repeat=10):
-        for _ in range(10):
-            gs = graph_init_jv(rngs)
-
-    graph_rollout_jv = jax.jit(jax.vmap(graph.rollout, in_axes=0))
-    with timer("graph_rollout_jv[jit]"):
-        gs_rollout = graph_rollout_jv(gs, eps=gs.eps)
-
-    with timer("graph_rollout_jv", repeat=10):
-        for _ in range(10):
-            gs_rollout = graph_rollout_jv(gs, eps=gs.eps)
-
-    if True:
-        eps_gs_rollout = jax.tree_util.tree_map(lambda x: x[0], gs_rollout)
-        rollout_json = pendulum_nodes.render(eps_gs_rollout)
-        pendulum_nodes.save("./main_compiler.html", rollout_json)
-        # from IPython.display import HTML
-        # HTML(rollout_json)
-
-    if True:
-        action = gs_rollout.nodes["attitude"].inputs["agent"].data.action[:, :, 0, 0].T
-        plt.plot(action)
     plt.show()

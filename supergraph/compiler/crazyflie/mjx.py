@@ -91,14 +91,18 @@ if __name__ == "__main__":
 
     def update_viewer(pos, att, pos_plat, att_plat):
         qpos = get_qpos(pos, att, pos_plat, att_plat)
-        viewer.update(qpos)
+        mjx_d = viewer.update(qpos)
+        dmin = mjx_d.contact.dist.min()
+        jax.debug.print("dmin={dmin}, dist={dist}", dmin=dmin, dist=mjx_d.contact.dist)
+        return mjx_d
 
     # Data
     num_samples = 50
     pos_offset = jnp.array([0., 0., 0.])  # Offset of cf position in local frame (mocap vs bottom of cf)
     pos = jnp.zeros((num_samples, 3), dtype=float)
-    pos = pos.at[:, 2].set(jnp.linspace(0.35, -0.00))
+    pos = pos.at[:, 2].set(jnp.linspace(0.1, .1))
     att = jnp.zeros((num_samples, 3), dtype=float)
+    att = att.at[:, :2].set(0.6)
     pos_plat = jnp.zeros((num_samples, 3), dtype=float)
     # pos_plat = pos_plat.at[:, 0].set(jnp.linspace(0., -1., num_samples))
     # pos_plat = pos_plat.at[:, 1].set(jnp.linspace(0., -1., num_samples))
@@ -113,7 +117,7 @@ if __name__ == "__main__":
     i = 0
     start = time.time()
     while True:
-        jit_update_viewer(pos[i], att[i], pos_plat[i], att_plat[i])
+        mjx_d = jit_update_viewer(pos[i], att[i], pos_plat[i], att_plat[i])
         if i == (num_samples - 1):
             print("Resetting")
             time.sleep(5.0)

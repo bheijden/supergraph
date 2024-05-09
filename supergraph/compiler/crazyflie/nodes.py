@@ -34,6 +34,7 @@ from supergraph.compiler import rl
 from supergraph.compiler.base import GraphState, StepState
 from supergraph.compiler.node import BaseNode
 from supergraph.compiler.crazyflie.pid import PidObject
+from supergraph.compiler.crazyflie.filter import LPFObject
 
 
 CRAZYFLIE_PLATFORM_BRAX_XML = "/home/r2ci/supergraph/supergraph/compiler/crazyflie/cf2_brax.xml"
@@ -163,6 +164,19 @@ class DebugAttitudeControllerOutput(AttitudeControllerOutput):
 @struct.dataclass
 class AgentParams(base.Base):
     action_dim: int = struct.field(pytree_node=False, default=2)
+    mapping: List[str] = struct.field(pytree_node=False, default=None)
+
+    def to_output(self, action: jax.Array, z_plat: Union[float, jax.typing.ArrayLike]) -> AttitudeControllerOutput:
+        assert self.mapping is not None, "Mapping not provided"
+        actions_mapped = {k: a for a, k in zip(action, self.mapping)}
+        actions_mapped["pwm_ref"] = None
+        actions_mapped["theta_ref"] = actions_mapped.get("theta_ref", 0.0)
+        actions_mapped["phi_ref"] = actions_mapped.get("phi_ref", 0.0)
+        actions_mapped["psi_ref"] = actions_mapped.get("psi_ref", 0.0)
+        z_plat = z_plat if z_plat is not None else 0.
+        actions_mapped["z_ref"] = actions_mapped.get("z_ref", 0.0) + z_plat
+        output = AttitudeControllerOutput(**actions_mapped)
+        return output
 
 
 @struct.dataclass
@@ -239,63 +253,81 @@ class PPOAgentParams(base.Base):
                 raise NotImplementedError("Batched observations not implemented yet")
 
         # offset cf_pos based on pos_offset in local frame
-        cf2w_R = rpy_to_R(att)
-        cf_pos = pos + cf2w_R @ pos_offset if pos_offset is not None else pos
-        cf_att = att
-        cf_vel = vel
+        R_cf2w = rpy_to_R(att)
+        pos_cfiw = pos + R_cf2w @ pos_offset if pos_offset is not None else pos
+        att_cf2w = att
+        vel_cfiw = vel
+        pos_isiw = pos_plat
+        att_is2w = att_plat
         assert (pos_plat is None) == (att_plat is None), "All or none of pos_plat, att_plat should be provided."
         if pos_plat is not None and att_plat is not None:
-            is_pos = pos_plat
-            polar, azimuth = rpy_to_spherical(att_plat)
-            inclination = polar
+            # a=agent frame
+            # w=world frame
+            # is=inclined surface frame
+            # cf=crazyflie frame
 
-            # Make cf=crazyflie rotation matrix
-            cf2w_R = rpy_to_R(cf_att)
+            # Make rotation matrix
+            # a_att = jnp.array([0., 0., cf_att[2]], dtype=float)
+            # R_a2w = rpy_to_R(a_att)
+            Rz = jnp.array([[jnp.cos(att_cf2w[2]), -jnp.sin(att_cf2w[2]), 0],
+                            [jnp.sin(att_cf2w[2]), jnp.cos(att_cf2w[2]), 0],
+                            [0, 0, 1]])
+            R_a2w = Rz
 
             # Make is=inclined surface rotation matrix
-            Rz = jnp.array([[jnp.cos(azimuth), -jnp.sin(azimuth), 0],
-                            [jnp.sin(azimuth), jnp.cos(azimuth), 0],
-                            [0, 0, 1]])
-            is2w_R = Rz
+            R_is2w = rpy_to_R(att_is2w)
 
-            # World to is=inclined surface
-            w2is_H = jnp.eye(4)
-            w2is_H = w2is_H.at[:3, :3].set(is2w_R.T)
-            w2is_H = w2is_H.at[:3, 3].set(-is2w_R.T @ is_pos)
+            # Agent frame
+            H_w2a = jnp.eye(4)
+            H_w2a = H_w2a.at[:3, :3].set(R_a2w.T)
+            H_w2a = H_w2a.at[:3, 3].set(-R_a2w.T @ pos_cfiw)
 
-            # Transform cf position to is frame
-            cf_pos_is = w2is_H @ jnp.concatenate([cf_pos, jnp.array([1.0])])
-            cf_pos_is = cf_pos_is[:3]
-            cf_att_is = R_to_rpy(is2w_R.T @ cf2w_R)
+            # Transform cf to agent frame
+            R_cf2w = rpy_to_R(att_cf2w)
+            att_cf2a = R_to_rpy(R_a2w.T @ R_cf2w)
+            roll_cf2a, pitch_cf2a, yaw_cf2a = att_cf2a
+            rp_cf2a = jnp.array([roll_cf2a, pitch_cf2a])
 
-            # Force cf_yaw=0
-            cf_att_is = cf_att_is.at[2].set(0.0)  # todo: UNCOMMENT
+            # Transform is position to agent frame
+            pos_isia = H_w2a @ jnp.concatenate([pos_isiw, jnp.array([1.0])])
+            pos_isia = pos_isia[:3]
+            att_is2a = R_to_rpy(R_a2w.T @ R_is2w)
+            polar_is2a, is_azimuth_a = rpy_to_spherical(att_is2a)
+            inclination = polar_is2a
+            # jax.debug.print("azimuth: {azimuth}, inclination: {inclination}", azimuth=is_azimuth, inclination=inclination)
 
             # Transform cf velocity to is frame
-            cf_vel_is = is2w_R.T @ cf_vel
+            vel_cfia = R_a2w.T @ vel_cfiw
 
             # Prepare observation
-            obs = jnp.concatenate([cf_pos_is, cf_vel_is, cf_att_is, jnp.array([inclination])])
+            # roll_cf2w, pitch_cf2w, _ = att_cf2w
+            # rp_cf2w = jnp.array([roll_cf2w, pitch_cf2w])
+            # obs = jnp.concatenate([rp_cf2w, vel_cfia, pos_isia, jnp.array([inclination, is_azimuth_a])])
+            obs = jnp.concatenate([rp_cf2a, vel_cfia, pos_isia, jnp.array([inclination, is_azimuth_a])])
 
             # Assuming vel_plat represents the velocity vector in the world frame
             if vel_plat is not None:
-                is_vel = is2w_R.T @ vel_plat.reshape(-1)[-3:]
-                obs = jnp.concatenate([obs, is_vel])
+                vel_isiw = vel_plat
+                vel_isia = R_a2w.T @ vel_isiw.reshape(-1)[-3:]
+                obs = jnp.concatenate([obs, vel_isia])
         else:
-            obs = jnp.concatenate([cf_pos, cf_vel, cf_att])
+            obs = jnp.concatenate([pos_cfiw, vel_cfiw, att_cf2w])  # All in agent frame
+
         if prev_action is not None:
             obs = jnp.concatenate([obs, prev_action])
         return obs
 
-    def to_output(self, action: jax.Array) -> Dict:
+    def to_output(self, action: jax.Array, z_plat: Union[float, jax.typing.ArrayLike]) -> AttitudeControllerOutput:
         assert self.mapping is not None, "Mapping not provided"
         actions_mapped = {k: a for a, k in zip(action, self.mapping)}
         actions_mapped["pwm_ref"] = None
         actions_mapped["theta_ref"] = actions_mapped.get("theta_ref", 0.0)
         actions_mapped["phi_ref"] = actions_mapped.get("phi_ref", 0.0)
         actions_mapped["psi_ref"] = actions_mapped.get("psi_ref", 0.0)
-        actions_mapped["z_ref"] = actions_mapped.get("z_ref", 0.0)
-        return actions_mapped
+        z_plat = z_plat if z_plat is not None else 0.
+        actions_mapped["z_ref"] = actions_mapped.get("z_ref", 0.0) + z_plat
+        output = AttitudeControllerOutput(**actions_mapped)
+        return output
 
 
 @struct.dataclass
@@ -322,9 +354,8 @@ class AttitudeControllerParams(base.Base):
         actions_mapped["z_ref"] = None
         return AttitudeControllerOutput(**actions_mapped)
 
-    def to_command(self, state: Any, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array], att: jax.typing.ArrayLike) -> Tuple[Any, AttitudeControllerOutput]:
+    def to_command(self, state: Any, output: AttitudeControllerOutput, z: Union[float, jax.Array], vz: Union[float, jax.Array], att: jax.typing.ArrayLike) -> Tuple[Any, AttitudeControllerOutput]:
         # Scale action
-        output = self.to_output(action)
         return state, output
 
 
@@ -352,6 +383,7 @@ class SentinelParams(base.Base):
     x_range: jax.typing.ArrayLike
     y_range: jax.typing.ArrayLike
     z_range: jax.typing.ArrayLike
+    vel_plat_max: Union[float, jax.typing.ArrayLike]
     azimuth_max: Union[float, jax.typing.ArrayLike]
     polar_range: jax.typing.ArrayLike
     fixed_position: jax.typing.ArrayLike
@@ -402,13 +434,7 @@ class PIDParams(base.Base):
         actions_mapped["z_ref"] = actions_mapped.get("z_ref", 0.0)
         return AttitudeControllerOutput(**actions_mapped)
 
-    def to_command(self, state: PIDState, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array], att: jax.typing.ArrayLike = None) -> Tuple[PIDState, AttitudeControllerOutput]:
-        # subtract platform z, so that the controller is relative to the platform
-        z = z - z_plat
-
-        # Scale action
-        output = self.to_output(action)
-
+    def to_command(self, state: PIDState, output: AttitudeControllerOutput, z: Union[float, jax.Array], vz: Union[float, jax.Array], att: jax.typing.ArrayLike = None) -> Tuple[PIDState, AttitudeControllerOutput]:
         # PID
         dt = 1/self.rate
         # error = jnp.clip(output.z_ref - z, -0.1, 0.1)
@@ -475,13 +501,13 @@ class PIDParams(base.Base):
 
 @struct.dataclass
 class RewardParams:
-    k1: float = 0.78  # Weights att_error
-    k2: float = 0.54  # Weights vyz_error
-    k3: float = 2.35  # Weights vx*theta
-    k4: float = 2.74  # Weights act_att_error
-    f1: float = 8.4   # Weights final att_error
-    f2: float = 1.76  # Weights final vel_error
-    fp: float = 56.5  # Weights final perfect reward
+    k1: float = 0.3242625604682307  # Weights att_error
+    k2: float = 0.4129516217140342  # Weights vyz_error
+    k3: float = 1.415367037157159  # Weights vx*theta
+    k4: float = 1.6040170382473968  # Weights act_att_error
+    f1: float = 7.393182659952971   # Weights final att_error
+    f2: float = 1.183511931649486  # Weights final vel_error
+    fp: float = 356.7628687436355  # Weights final perfect reward
     p: float = 0.05
 
 
@@ -489,7 +515,9 @@ class RewardParams:
 class ZPIDState(base.Base):
     pidZ: PidObject
     pidVz: PidObject
-
+    lpfPhiRef: LPFObject
+    lpfThetaRef: LPFObject
+    lpfZRef: LPFObject
 
 @struct.dataclass
 class ZPIDParams(base.Base):
@@ -503,6 +531,10 @@ class ZPIDParams(base.Base):
     # PID
     pidZ: PidObject
     pidVz: PidObject
+    # LPF
+    lpfPhiRef: LPFObject
+    lpfThetaRef: LPFObject
+    lpfZRef: LPFObject
     # Action mapping
     mapping: List[str] = struct.field(pytree_node=False)
 
@@ -512,10 +544,15 @@ class ZPIDParams(base.Base):
         vz_outputLimit = self.UINT16_MAX / 2 / self.pwm_scale
         pidZ = self.pidZ.replace(outputLimit=z_outputLimit)
         pidVz = self.pidVz.replace(outputLimit=vz_outputLimit)
-        # Reset
+        # Reset PID
         pidZ = pidZ.pidReset()
         pidVz = pidVz.pidReset()
-        return ZPIDState(pidZ=pidZ, pidVz=pidVz)
+        # Reset LPF
+        lpfPhiRef = self.lpfPhiRef.lpfReset()
+        lpfThetaRef = self.lpfThetaRef.lpfReset()
+        lpfZRef = self.lpfZRef.lpfReset()
+        return ZPIDState(pidZ=pidZ, pidVz=pidVz,
+                         lpfPhiRef=lpfPhiRef, lpfThetaRef=lpfThetaRef, lpfZRef=lpfZRef)
 
     def to_output(self, action: jax.Array) -> AttitudeControllerOutput:
         actions_mapped = {k: a for a, k in zip(action, self.mapping)}
@@ -526,16 +563,25 @@ class ZPIDParams(base.Base):
         actions_mapped["z_ref"] = actions_mapped.get("z_ref", 0.0)
         return AttitudeControllerOutput(**actions_mapped)
 
-    def to_command(self, state: ZPIDState, action: jax.Array, z: Union[float, jax.Array], vz: Union[float, jax.Array], z_plat: Union[float, jax.Array], att: jax.typing.ArrayLike = None) -> Tuple[ZPIDState, AttitudeControllerOutput]:
-        # Get output from action (use mapping)
-        output = self.to_output(action)
+    def to_command(self, state: ZPIDState, output: AttitudeControllerOutput, z: Union[float, jax.Array], vz: Union[float, jax.Array], att: jax.typing.ArrayLike = None) -> Tuple[ZPIDState, AttitudeControllerOutput]:
+        # Get LPF objects
+        lpfPhiRef = state.lpfPhiRef
+        lpfThetaRef = state.lpfThetaRef
+        lpfZRef = state.lpfZRef
+
+        # Apply filter
+        lpfPhiRef = lpfPhiRef.lpfUpdate(output.phi_ref)
+        lpfThetaRef = lpfThetaRef.lpfUpdate(output.theta_ref)
+        lpfZRef = lpfZRef.lpfUpdate(output.z_ref)
+        # output = output.replace(phi_ref=lpfPhiRef.output,  # todo: UNCOMMENT?
+        #                         theta_ref=lpfThetaRef.output,
+        #                         z_ref=lpfZRef.output)
 
         # Get PID objects
         pidZ = state.pidZ
         pidVz = state.pidVz
 
         # subtract platform z, so that the controller is relative to the platform
-        z = z - z_plat
         z_ref = output.z_ref
 
         # Run position controller
@@ -550,22 +596,12 @@ class ZPIDParams(base.Base):
         pwm_unclipped = pwmRaw * self.pwm_scale + self.pwm_base
         pwm = jnp.clip(pwm_unclipped, self.pwm_range[0], self.pwm_range[1])
 
-        # # Get angles
-        # if att is not None:
-        #     phi, theta, _ = att
-        # else:
-        #     phi, theta = output.phi_ref, output.theta_ref
-        #
-        # # Given the z_force component, the total force can be calculated
-        # # by finding the force that would be required to maintain the desired z_force given that the force is directed based
-        # # on the roll and pitch references.
-        # cphi_ctheta = jnp.clip(jnp.cos(phi) * jnp.cos(theta), 0.21, 1.0)
-
         # Update output
         new_output = output.replace(pwm_ref=pwm)
 
         # Update state
-        new_state = state.replace(pidZ=pidZ, pidVz=pidVz)
+        new_state = state.replace(pidZ=pidZ, pidVz=pidVz,
+                                  lpfPhiRef=lpfPhiRef, lpfThetaRef=lpfThetaRef, lpfZRef=lpfZRef)
 
         # todo: DEBUG
         new_output = DebugAttitudeControllerOutput(
@@ -597,7 +633,7 @@ class Sentinel(BaseNode):
         super().__init__(*args, **kwargs)
 
     def init_params(self, rng: jax.Array = None, graph_state: GraphState = None) -> SentinelParams:
-        scale = 0.5  # TODO: MODIFY
+        scale = 1.0 #0.5  # TODO: MODIFY
         params = SentinelParams(
             # ctrl
             ctrl_mapping=["z_ref", "theta_ref", "phi_ref", "psi_ref"],
@@ -616,10 +652,11 @@ class Sentinel(BaseNode):
             # init platform
             init_plat="random",  # random, fixed
             fixed_inclination=onp.pi / 7,  # Fixed inclination (25.7 degrees)
-            azimuth_max=0.,  # todo: not yet working....
+            azimuth_max=0.5,
             polar_range=jnp.array([0., scale*onp.pi / 7]),  # Max inclination (25.7 degrees)
             # Goal
-            vel_land=0.1,  # Landing velocity
+            vel_plat_max=1.0,  # Max constant velocity of platform
+            vel_land=0.3,  # Landing velocity
             gamma=0.99,  # Discount factor
             # Domain randomization
             noise=True,  # Whether to add noise to the measurements & perform domain randomization.
@@ -630,7 +667,7 @@ class Sentinel(BaseNode):
         """Default state of the root."""
         if rng is None:
             rng = jax.random.PRNGKey(0)
-        rngs = jax.random.split(rng, num=6)
+        rngs = jax.random.split(rng, num=7)
         params = self.get_step_state(graph_state).params if graph_state else self.init_params(rng[0])
         # Start position
         if params.init_cf == "random":
@@ -641,18 +678,21 @@ class Sentinel(BaseNode):
         elif params.init_cf == "fixed":
             init_pos = jnp.array([0.0, 0.0, 2.0])
         elif params.init_cf == "inclined_landing":
-            init_x = jax.random.uniform(rngs[1], shape=(), minval=0.5, maxval=params.x_range[1])
-            init_y = jax.random.uniform(rngs[2], shape=(), minval=-0.2, maxval=0.2)
-            init_z = jax.random.uniform(rngs[3], shape=(), minval=-0.2, maxval=0.2)
+            init_x = jax.random.uniform(rngs[1], shape=(), minval=-params.x_range[1], maxval=params.x_range[1])
+            init_y = jax.random.uniform(rngs[2], shape=(), minval=-0.5, maxval=0.5)
+            init_z = jax.random.uniform(rngs[3], shape=(), minval=-0.2, maxval=2.0)
             init_pos = jnp.array([init_x, init_y, init_z])
         else:
             raise ValueError(f"Unknown start position method: {params.init_cf}")
 
         # Inclination
         if params.init_plat == "random":
-            polar = jax.random.uniform(rngs[4], shape=(), minval=params.polar_range[0], maxval=params.polar_range[1])
-            azimuth = jax.random.uniform(rngs[5], shape=(), minval=-params.azimuth_max, maxval=params.azimuth_max)
+            vx, vy = jax.random.uniform(rngs[4], shape=(2,), minval=0.0, maxval=params.vel_plat_max)
+            init_vel_plat = jnp.array([vx, vy, 0.0])
+            polar = jax.random.uniform(rngs[5], shape=(), minval=params.polar_range[0], maxval=params.polar_range[1])
+            azimuth = jax.random.uniform(rngs[6], shape=(), minval=-params.azimuth_max, maxval=params.azimuth_max)
         elif params.init_plat == "fixed":
+            init_vel_plat = jnp.array([0., 0., 0.])
             polar = params.fixed_inclination
             azimuth = 0.0
         else:
@@ -666,7 +706,7 @@ class Sentinel(BaseNode):
             init_ang_vel=jnp.array([0.0, 0.0, 0.0]),
             init_pos_plat=jnp.array([0.0, 0.0, 0.0]),
             init_att_plat=init_att_plat,
-            init_vel_plat=jnp.array([0.0, 0.0, 0.0]),
+            init_vel_plat=init_vel_plat,
         )
 
     def step(self, step_state: StepState) -> Tuple[StepState, base.Empty]:
@@ -955,7 +995,7 @@ class MoCap(BaseNode):
             noise=noise,
             pos_std=onp.array([0.01, 0.01, 0.01], dtype=float),     # [x, y, z]
             vel_std=onp.array([0.02, 0.02, 0.02], dtype=float),        # [xdot, ydot, zdot]
-            att_std=onp.array([0.01, 0.01, 0.01], dtype=float),     # [phi, theta, psi]
+            att_std=onp.array([0.02, 0.02, 0.02], dtype=float),     # [phi, theta, psi]
             ang_vel_std=onp.array([0.1, 0.1, 0.1], dtype=float),        # [p, q, r]
             pos_plat_std=onp.array([0.01, 0.01, 0.01], dtype=float),  # [x, y, z]
             att_plat_std=onp.array([0.01, 0.01, 0.01], dtype=float),  # [phi, theta, psi]
@@ -1042,8 +1082,8 @@ class AttitudeController(BaseNode):
         params: AttitudeControllerParams
 
         # Prepare output
-        action = inputs["agent"][-1].data.action
-        new_state, output = params.to_command(state, action, z=None, vz=None, z_plat=None, att=None)
+        agent_output = inputs["agent"][-1].data
+        new_state, output = params.to_command(state, agent_output, z=None, vz=None, att=None)
 
         # Update state
         new_step_state = step_state.replace(state=new_state)
@@ -1131,12 +1171,11 @@ class PID(AttitudeController):
         params: PIDParams
 
         # Prepare output
-        action = inputs["agent"][-1].data.action
+        agent_output = inputs["agent"][-1].data
         z = inputs["mocap"][-1].data.pos[-1]
         vz = inputs["mocap"][-1].data.vel[-1]
-        z_plat = inputs["mocap"][-1].data.pos_plat[-1]
         att = inputs["mocap"][-1].data.att
-        new_state, output = params.to_command(state, action, z=z, vz=vz, z_plat=z_plat, att=att)
+        new_state, output = params.to_command(state, agent_output, z=z, vz=vz, att=att)
 
         # Update state
         new_step_state = step_state.replace(state=new_state)
@@ -1154,7 +1193,7 @@ class ZPID(AttitudeController):
         ss_world = self.get_step_state(graph_state, "world")
         mass = ss_world.params.mass if ss_world is not None else 0.03303
         pwm_constants = ss_world.params.pwm_constants if ss_world is not None else onp.array([2.130295e-11, 1.032633e-6, 5.485e-4])
-        #
+        # Initialize PID controllers
         UINT16_MAX = 65_535
         zvel_max = 1.0
         vel_max_overhead = 1.1
@@ -1163,6 +1202,10 @@ class ZPID(AttitudeController):
         vz_outputLimit = UINT16_MAX / 2 / pwm_scale
         pidZ = PidObject.pidInit(kp=2.0, ki=0.5, kd=0.0, outputLimit=z_outputLimit, iLimit=1., dt=1/self.rate, samplingRate=self.rate, cutoffFreq=20., enableDFilter=False)
         pidVz = PidObject.pidInit(kp=25., ki=15., kd=0.0, outputLimit=vz_outputLimit, iLimit=5000., dt=1/self.rate, samplingRate=self.rate, cutoffFreq=20., enableDFilter=False)
+        # Initialize low-pass filters
+        lpfPhiRef = LPFObject.lpfInit(samplingRate=self.rate, cutoffFreq=10.)  # Initialize the Low Pass Filter
+        lpfThetaRef = LPFObject.lpfInit(samplingRate=self.rate, cutoffFreq=10.0)  # Initialize the Low Pass Filter
+        lpfZRef = LPFObject.lpfInit(samplingRate=self.rate, cutoffFreq=25.0)  # Initialize the Low Pass Filter
         params = ZPIDParams(
             UINT16_MAX=UINT16_MAX,
             pwm_scale=pwm_scale,
@@ -1173,6 +1216,10 @@ class ZPID(AttitudeController):
             # PID
             pidZ=pidZ,
             pidVz=pidVz,
+            # LPF
+            lpfPhiRef=lpfPhiRef,
+            lpfThetaRef=lpfThetaRef,
+            lpfZRef=lpfZRef,
             # Action mapping
             mapping=mapping,
         )
@@ -1227,12 +1274,11 @@ class ZPID(AttitudeController):
         params: PIDParams
 
         # Prepare output
-        action = inputs["agent"][-1].data.action
+        agent_output = inputs["agent"][-1].data
         z = inputs["mocap"][-1].data.pos[-1]
         vz = inputs["mocap"][-1].data.vel[-1]
-        z_plat = inputs["mocap"][-1].data.pos_plat[-1]
         att = inputs["mocap"][-1].data.att
-        new_state, output = params.to_command(state, action, z=z, vz=vz, z_plat=z_plat, att=att)
+        new_state, output = params.to_command(state, agent_output, z=z, vz=vz, att=att)
 
         # Update state
         new_step_state = step_state.replace(state=new_state)
@@ -1242,19 +1288,22 @@ class ZPID(AttitudeController):
 
 class RandomAgent(BaseNode):
     def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> AgentParams:
-        return AgentParams()
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        mapping = ss_sentinel.params.ctrl_mapping if ss_sentinel is not None else ["z_ref", "theta_ref", "phi_ref"]
+        return AgentParams(mapping=mapping)
 
-    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AgentOutput:
+    def init_output(self, rng: jax.Array = None, graph_state: GraphState = None) -> AttitudeControllerOutput:
         """Default output of the node."""
-        if rng is None:
-            rng = jax.random.PRNGKey(0)
-        ss = self.get_step_state(graph_state)
-        params = ss.params if ss else self.init_params(rng, graph_state)
-        action = jax.random.uniform(rng, shape=(params.action_dim,), minval=-1.0, maxval=1.0)
-        output = AgentOutput(action=action)
+        output = AttitudeControllerOutput(
+            pwm_ref=None,
+            phi_ref=0.0,
+            theta_ref=0.0,
+            psi_ref=0.0,
+            z_ref=0.0,
+        )
         return output
 
-    def step(self, step_state: StepState) -> Tuple[StepState, AgentOutput]:
+    def step(self, step_state: StepState) -> Tuple[StepState, AttitudeControllerOutput]:
         """Step the node."""
         # Unpack StepState
         _, state, params, inputs = step_state.rng, step_state.state, step_state.params, step_state.inputs
@@ -1263,7 +1312,7 @@ class RandomAgent(BaseNode):
         new_rng, rng_action = jax.random.split(step_state.rng)
         action = jax.random.uniform(rng_action, shape=(params.action_dim,), minval=-1.0, maxval=1.0)
         action = action.at[1:].set(0.) if action.shape[0] > 1 else action
-        output = AgentOutput(action=action)
+        output = params.to_output(action, z_plat=0.0)
 
         # Update state
         new_step_state = step_state.replace(rng=new_rng)
@@ -1273,11 +1322,13 @@ class RandomAgent(BaseNode):
 class PPOAgent(RandomAgent):
 
     def init_params(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> PPOAgentParams:
+        ss_sentinel = self.get_step_state(graph_state, "sentinel")
+        mapping = ss_sentinel.params.ctrl_mapping if ss_sentinel is not None else ["z_ref", "theta_ref", "phi_ref"]
         return PPOAgentParams(
             act_scaling=None,
             obs_scaling=None,
             model=None,
-            mapping=None
+            mapping=mapping
         )
 
     def init_state(self, rng: jax.Array = None, graph_state: base.GraphState = None) -> AgentState:
@@ -1285,7 +1336,7 @@ class PPOAgent(RandomAgent):
         ss = ss if ss else self.init_params(rng, graph_state)
         return AgentState(prev_action=jnp.zeros(ss.params.action_dim, dtype=jnp.float32))
 
-    def step(self, step_state: base.StepState) -> Tuple[base.StepState, AgentOutput]:
+    def step(self, step_state: base.StepState) -> Tuple[base.StepState, AttitudeControllerOutput]:
         params = step_state.params
         obs = self.get_observation(step_state)
         if any([params.act_scaling is None, params.obs_scaling is None, params.model is None]):
@@ -1303,7 +1354,8 @@ class PPOAgent(RandomAgent):
             action = params.get_action(obs)
             new_state = AgentState(prev_action=action)
             new_ss = step_state.replace(state=new_state)
-        output = AgentOutput(action=action)
+
+        output = self.to_output(step_state, action)
         return new_ss, output
 
     @staticmethod
@@ -1311,10 +1363,15 @@ class PPOAgent(RandomAgent):
         mocap = step_state.inputs["mocap"][-1].data
         prev_action = step_state.state.prev_action
         obs = step_state.params.get_observation(pos=mocap.pos, vel=mocap.vel, att=mocap.att,
-                                                pos_plat=mocap.pos_plat, att_plat=mocap.att_plat,
-                                                # prev_action=prev_action
+                                                pos_plat=mocap.pos_plat, att_plat=mocap.att_plat
                                                 )
         return obs
+
+    @staticmethod
+    def to_output(step_state: base.StepState, action: jax.Array) -> AttitudeControllerOutput:
+        mocap = step_state.inputs["mocap"][-1].data
+        output = step_state.params.to_output(action=action, z_plat=mocap.pos_plat[2])
+        return output
 
 
 def pwm_to_force(pwm_constants: jax.typing.ArrayLike, pwm: Union[float, jax.typing.ArrayLike]) -> Union[float, jax.Array]:
@@ -1394,7 +1451,7 @@ def spherical_to_R(polar, azimuth):
     Ry = jnp.array([[jnp.cos(polar), 0, jnp.sin(polar)],
                     [0, 1, 0],
                     [-jnp.sin(polar), 0, jnp.cos(polar)]])
-    R = Ry @ Rz
+    R = Rz @ Ry
     return R
 
 
@@ -1563,8 +1620,10 @@ class Environment(rl.Environment):
         """Override this method if you want to add additional info."""
         return {}
 
-    def get_output(self, graph_state: base.GraphState, action: jax.Array) -> AgentOutput:
-        return AgentOutput(action=action)
+    def get_output(self, graph_state: base.GraphState, action: jax.Array) -> AttitudeControllerOutput:
+        ss = self.get_step_state(graph_state)
+        output = PPOAgent.to_output(ss, action)
+        return output
 
     def update_step_state(self, graph_state: base.GraphState, action: jax.Array = None) -> Tuple[base.GraphState, base.StepState]:
         """Override this method if you want to update the step state."""
@@ -1917,20 +1976,6 @@ class InclinedLanding(Environment):
         state: OdeState = self.get_step_state(graph_state, "world").state
         dmin = contact_distance(self._mjx_m, self._mjx_d, state.pos, state.att, state.pos_plat, state.att_plat)
         terminated = dmin < 0.0
-        # platform_qpos, platform_cor_qpos, cf_qpos = get_qpos(state.pos, state.att, state.pos_plat, state.att_plat)
-        # if self._mjx_d.qpos.shape[0] == 24:
-        #     qpos = jnp.concatenate([platform_qpos, platform_cor_qpos, cf_qpos])
-        # elif self._mjx_d.qpos.shape[0] == 16:
-        #     qpos = jnp.concatenate([platform_cor_qpos, cf_qpos])
-        # else:
-        #     print(f"invalid shape")
-        # mjx_d = self._mjx_d.replace(qpos=qpos)
-        # mjx_d = mjx.forward(self._mjx_m, mjx_d)
-        # terminated = mjx_d.contact.dist.min() < 0.0
-        # ss = self.get_step_state(graph_state)
-        # last_mocap: MoCapOutput = ss.inputs["mocap"][-1].data
-        # x, _, _ = last_mocap.pos
-        # terminated = x < 0.
         return terminated
 
     def get_reward(self, graph_state: base.GraphState, action: jax.Array):
@@ -1943,9 +1988,25 @@ class InclinedLanding(Environment):
         psi_ref = output.psi_ref
         att_ref = jnp.array([phi_ref, theta_ref, psi_ref])
 
+        # Penalize delta actions
+        ss = self.get_step_state(graph_state)
+        prev_action = ss.state.prev_action
+        prev_output = p_att.to_output(prev_action)
+        dz_ref = z_ref - prev_output.z_ref
+        dphi_ref = phi_ref - prev_output.phi_ref
+        dtheta_ref = theta_ref - prev_output.theta_ref
+        dpsi_ref = psi_ref - prev_output.psi_ref
+
+        # Delta action cost
+        error_dangle_ref = 7*jnp.sqrt(dphi_ref**2 + dtheta_ref**2 + dpsi_ref**2) # todo: Remove harcoded scaling parameter
+        error_dz_ref = 7*jnp.sqrt(dz_ref**2)  # todo: Remove harcoded scaling parameter
+        # error_daction = (0.2 * error_dz_ref + 0.6 * error_dangle_ref)  # Penalize delta action more.
+        # act_z_error = z_ref ** 2
+
         # Get current state
         world_state: OdeState = self.get_step_state(graph_state, "world").state
         pos_target = jnp.array([0., 0., 0.])  # Final position target
+        pos_error = jnp.linalg.norm(pos_target - world_state.pos)
 
         # Get rotation matrices
         R_cf2w_ref = rpy_to_R(att_ref)
@@ -1963,8 +2024,22 @@ class InclinedLanding(Environment):
         ss_sentinel = self.get_step_state(graph_state, "sentinel")
         vel_land_ref = -z_is * ss_sentinel.params.vel_land  # target is landing velocity in negative direction of platform z-axis
         vel_land_error = jnp.linalg.norm(vel_land_ref-world_state.vel)
-        z_cf_xy = jnp.array([z_cf[0], z_cf[1], 0]) / jnp.linalg.norm(jnp.array([z_cf[0], z_cf[1], 0]))  # Project z-axis to xy-plane
-        vel_underact = 0.5*jnp.clip(jnp.dot(z_cf_xy, world_state.vel), None, 0)   # Promote underactuated motion (i.e. velocity in negative z-axis)
+        # z_cf_xy = jnp.array([z_cf[0], z_cf[1], 0]) / jnp.linalg.norm(jnp.array([z_cf[0], z_cf[1], 0]))  # Project z-axis to xy-plane
+        # vel_underact = jnp.clip(jnp.dot(z_cf, world_state.vel), None, 0)   # Promote underactuated motion (i.e. velocity in negative z-axis)
+        # vel_underact = jnp.clip(jnp.dot(z_cf_xy, world_state.vel), None, 0)   # Promote underactuated motion (i.e. velocity in negative z-axis)
+        vxyz_error = jnp.linalg.norm(world_state.vel - jnp.dot(z_is, world_state.vel) * z_is)
+
+        cf_is_align = 7*jnp.clip(jnp.dot(z_cf, z_is), 0, None)  # todo: remove hardcoded scaling parameter
+        vel_cf_align = jnp.clip(jnp.dot(z_cf, world_state.vel), None, 0)
+        proximity = pos_error < 0.3
+        vel_underact = cf_is_align * vel_cf_align * (world_state.pos[2] > 0.) * proximity
+
+        # Penalize being on the negative side of the platform
+        pos_cfiis = R_is2w.T @ (world_state.pos - world_state.pos_plat)
+        z_cfiis = pos_cfiis[2]
+        z_underplat = jnp.clip(z_cfiis, None, 0)  # Only penalize if below the platform
+        mag_xy_cfiis = jnp.clip(jnp.linalg.norm(pos_cfiis[:2]), 0.01, None)  # Get magnitude of x and y components
+        error_underplat = z_underplat ** 2 * 10/mag_xy_cfiis  # If further away in xy-plane, less penalty
 
         # @struct.dataclass
         # class RewardParams:
@@ -1982,16 +2057,14 @@ class InclinedLanding(Environment):
         f1, f2 = self._rwd_params.f1, self._rwd_params.f2
         fp = self._rwd_params.fp
         p = self._rwd_params.p
-        pos_error = jnp.linalg.norm(pos_target - world_state.pos)
-        vxyz_error = jnp.linalg.norm(world_state.vel - jnp.dot(z_is, world_state.vel) * z_is)
-        act_z_error = z_ref ** 2 # todo: * 0
-        pos_perfect = (pos_error < (p * 1.5))#*0.66))
-        att_perfect = (att_error < (p * 1))#*3))
-        vel_perfect = (vel_land_error < (p * 5))#*2))
+        pos_perfect = (pos_error < 0.05)
+        att_perfect = (att_error < 0.1)
+        vel_perfect = (vel_land_error < 0.5)
         is_perfect = pos_perfect * att_perfect * vel_perfect
-        cost_eps = pos_error + k1*att_error + k2*vxyz_error + k3*vel_underact + k1*act_att_error + k4*act_z_error
+        # cost_eps = pos_error + k1*att_error + k2*vxyz_error + k3*vel_underact + k1*act_att_error + k4*act_z_error
+        cost_eps = pos_error + k1*att_error + k2*vxyz_error + k3*vel_underact + k1*error_dangle_ref + k4*error_dz_ref + 10 * error_underplat
         cost_final = pos_error + f1*att_error + f2*vel_land_error
-        cost_perfect = -fp * is_perfect  #*2
+        cost_perfect = -fp * is_perfect
 
         # Get termination conditions
         gamma = ss_sentinel.params.gamma
