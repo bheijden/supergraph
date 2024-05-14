@@ -23,10 +23,11 @@ from supergraph.compiler.graph import Graph
 
 if __name__ == "__main__":
     # todo: add platform velocity.
-    #  - Add velocity to get_observation
-    #  - Double check reward if we need to modify when plat_pos is not zero.
-    #  - Add constant velocity to the platform.
-    #  - Change clipping to be in larger range centered aruond the platform.
+    #  - [x] Sample init_vel in Sentinel
+    #  - [x] Add dynamics to ode
+    #  - [x] Add velocity to get_observation
+    #  - [x] Double check reward if we need to modify when plat_pos is not zero.
+    #  - [x] Change pos, pos_plat clipping to be in larger range centered around the platform.
     # todo: CF is unstable when pitching & rolling simultaneously
     #  - Penalize abrupt changes in both roll & pitch behavior
     #  - LPF Roll/pitch references.
@@ -34,11 +35,6 @@ if __name__ == "__main__":
     #  - Check if motors are turned off too quickly
     #  - Check if landing velocity is too high
     # todo: stream vicon quaternions?
-    # todo: real experiments checklist
-    #       - Check tracking offset Vicon vs. simulated Mocap
-    #           - Simulation: [0,0,0] == perfect landing --> pos_offset=[0,0,0]
-    #           - Real: [0,0,0.0193] == real landing --> pos_offset=[0,0,-0.0193]
-    #       - Add yaw controller that fixes yaw to zero in the platform frame.
     # todo: Remove DebugAttitudeControllerOutput
 
     # Create nodes

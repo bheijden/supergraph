@@ -1,0 +1,217 @@
+<mujoco model="cf2">
+  <option density="1.225" viscosity="1.8e-5"/>
+
+<!--  <compiler inertiafromgeom="false" meshdir="assets" autolimits="true" coordinate="local" eulerseq="xyz"/>-->
+  <compiler inertiafromgeom="false" meshdir="assets" autolimits="true" eulerseq="zyx"/>
+    <include file="./common/visual.xml"/>
+    <include file="./common/skybox.xml"/>
+    <include file="./common/materials.xml"/>
+
+  <default>
+    <default class="cf2">
+      <default class="visual">
+        <geom group="2" type="mesh" contype="0" conaffinity="0"/>
+      </default>
+      <default class="collision">
+        <geom group="3" type="mesh" contype="1" conaffinity="1"/>
+      </default>
+      <site group="5"/>
+    </default>
+  </default>
+
+  <asset>
+    <material name="polished_plastic" rgba="0.631 0.659 0.678 1"/>
+    <material name="polished_gold" rgba="0.969 0.878 0.6 1"/>
+    <material name="medium_gloss_plastic" rgba="0.109 0.184 0.0 1"/>
+    <material name="propeller_plastic" rgba="0.792 0.820 0.933 1"/>
+    <material name="white" rgba="1 1 1 1"/>
+    <material name="body_frame_plastic" rgba="0.102 0.102 0.102 1"/>
+    <material name="burnished_chrome" rgba="0.898 0.898 0.898 1"/>
+
+    <mesh file="cf2_0.obj"/>
+    <mesh file="cf2_1.obj"/>
+    <mesh file="cf2_2.obj"/>
+    <mesh file="cf2_3.obj"/>
+    <mesh file="cf2_4.obj"/>
+    <mesh file="cf2_5.obj"/>
+    <mesh file="cf2_6.obj"/>
+    <mesh file="cf2_collision_0.obj"/>
+    <mesh file="cf2_collision_1.obj"/>
+    <mesh file="cf2_collision_2.obj"/>
+    <mesh file="cf2_collision_3.obj"/>
+    <mesh file="cf2_collision_4.obj"/>
+    <mesh file="cf2_collision_5.obj"/>
+    <mesh file="cf2_collision_6.obj"/>
+    <mesh file="cf2_collision_7.obj"/>
+    <mesh file="cf2_collision_8.obj"/>
+    <mesh file="cf2_collision_9.obj"/>
+    <mesh file="cf2_collision_10.obj"/>
+    <mesh file="cf2_collision_11.obj"/>
+    <mesh file="cf2_collision_12.obj"/>
+    <mesh file="cf2_collision_13.obj"/>
+    <mesh file="cf2_collision_14.obj"/>
+    <mesh file="cf2_collision_15.obj"/>
+    <mesh file="cf2_collision_16.obj"/>
+    <mesh file="cf2_collision_17.obj"/>
+    <mesh file="cf2_collision_18.obj"/>
+    <mesh file="cf2_collision_19.obj"/>
+    <mesh file="cf2_collision_20.obj"/>
+    <mesh file="cf2_collision_21.obj"/>
+    <mesh file="cf2_collision_22.obj"/>
+    <mesh file="cf2_collision_23.obj"/>
+    <mesh file="cf2_collision_24.obj"/>
+    <mesh file="cf2_collision_25.obj"/>
+    <mesh file="cf2_collision_26.obj"/>
+    <mesh file="cf2_collision_27.obj"/>
+    <mesh file="cf2_collision_28.obj"/>
+    <mesh file="cf2_collision_29.obj"/>
+    <mesh file="cf2_collision_30.obj"/>
+    <mesh file="cf2_collision_31.obj"/>
+    <texture builtin="gradient" height="100" rgb1="1 1 1" rgb2="0 0 0" type="skybox" width="100"/>
+    <texture builtin="flat" height="1278" mark="cross" markrgb="1 1 1" name="texgeom" random="0.01" rgb1="0.8 0.6 0.4" rgb2="0.8 0.6 0.4" type="cube" width="127"/>
+    <texture builtin="checker" height="100" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8" type="2d" width="100"/>
+    <material name="MatPlane" reflectance="0.5" shininess="1" specular="1" texrepeat="60 60" texture="texplane"/>
+    <material name="geom" texture="texgeom" texuniform="true"/>
+  </asset>
+
+  <worldbody>
+    <light cutoff="100" diffuse="1 1 1" dir="-0 0 -1.3" directional="true" exponent="1" pos="0 0 1.3" specular=".1 .1 .1"/>
+    <!-- table -->
+    <geom name="table" size="20 20 .2" pos="0 0.0 -0.4" type="plane" material="grid" contype="0" conaffinity="0" condim="3"/>
+    <!-- platform 0-->
+    <body name="platform_xyz" pos="0.0 0.0 0.0" >
+      <freejoint/>
+      <inertial euler="0 0 0" pos="0 0 0" mass="1e-06" diaginertia="1e-06 1e-06 1e-06"/>
+      <geom name="platform_goal" type="sphere" rgba="1 0 0 0" pos="0 0 0" size="0.005" contype="0" conaffinity="0"/>
+      <body name="platform" pos="0.0 0.0 0.0" >
+        <inertial euler="0 0 0" pos="0 0 0" mass="1e0" diaginertia="1e0 1e0 1e0"/>
+          <geom name="platform_geom" rgba="0.2 0.2 0.2 0.33" type="box" pos="0 0 -0.025" size="0.15 0.125 0.02" contype="0" conaffinity="0" condim="3"/>
+        <geom name="patch_geom" rgba="0.35 0.35 0.35 0.33" type="box" pos="0 0 -0.005" size="0.05 0.05 0.005" contype="0" conaffinity="0" condim="3"/>
+          <joint name="platform_pitch" type="hinge" pos="0 0 0" axis="0 1 0" limited="false" damping="0.5"/>
+      </body>
+    </body>
+    <!-- platform 1-->
+    <body name="__platform_xyz" pos="0.0 0.0 0.0" >
+      <freejoint/>
+      <inertial euler="0 0 0" pos="0 0 0" mass="1e-06" diaginertia="1e-06 1e-06 1e-06"/>
+      <body name="__platform" pos="0.0 0.0 0.0" >
+        <inertial euler="0 0 0" pos="0 0 0" mass="1e0" diaginertia="1e0 1e0 1e0"/>
+          <geom name="__platform_geom" rgba="0.2 0.2 0.2 0.66" type="box" pos="0 0 -0.0225" size="0.15 0.125 0.02" contype="0" conaffinity="0" condim="3"/>
+          <geom name="__patch_geom" rgba="0.35 0.35 0.35 0.66" type="box" pos="0 0 -0.005" size="0.05 0.05 0.005" contype="0" conaffinity="0" condim="3"/>
+          <joint name="__platform_pitch" type="hinge" pos="0 0 0" axis="0 1 0" limited="false" damping="0.5"/>
+      </body>
+    </body>
+    <!-- platform 2-->
+    <body name="___platform_xyz" pos="0.0 0.0 0.0" >
+      <freejoint/>
+      <inertial euler="0 0 0" pos="0 0 0" mass="1e-06" diaginertia="1e-06 1e-06 1e-06"/>
+      <body name="___platform" pos="0.0 0.0 0.0" >
+        <inertial euler="0 0 0" pos="0 0 0" mass="1e0" diaginertia="1e0 1e0 1e0"/>
+          <geom name="___platform_geom" rgba="0.2 0.2 0.2 1" type="box" pos="0 0 -0.0225" size="0.15 0.125 0.02" contype="0" conaffinity="0" condim="3"/>
+          <geom name="___patch_geom" rgba="0.35 0.35 0.35 1" type="box" pos="0 0 -0.005" size="0.05 0.05 0.005" contype="0" conaffinity="0" condim="3"/>
+          <joint name="___platform_pitch" type="hinge" pos="0 0 0" axis="0 1 0" limited="false" damping="0.5"/>
+      </body>
+    </body>
+    <!-- crazyflie -->
+    <body name="cf2_num1" pos="0 0 0" childclass="cf2">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.027" diaginertia="2.3951e-5 2.3951e-5 3.2347e-5"/>
+      <body name="cf_mocap_num1" pos="0.0 0.0 0.013" >
+        <geom mesh="cf2_0" material="propeller_plastic" class="visual"/>
+        <geom mesh="cf2_1" material="medium_gloss_plastic" class="visual"/>
+        <geom mesh="cf2_2" material="polished_gold" class="visual"/>
+        <geom mesh="cf2_3" material="polished_plastic" class="visual"/>
+        <geom mesh="cf2_4" material="burnished_chrome" class="visual"/>
+        <geom mesh="cf2_5" material="body_frame_plastic" class="visual"/>
+        <geom mesh="cf2_6" material="white" class="visual"/>
+        <inertial euler="0 0 0" pos="0 0 0" mass="1e-09" diaginertia="1e-09 1e-09 1e-09"/>
+        <joint name="cf_mocap_num1" type="slide" axis="1 0 0" range="-0.01 0.01"/>
+      </body>
+    </body>
+    <!-- crazyflie -->
+    <body name="cf2_num2" pos="0 0 0" childclass="cf2">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.027" diaginertia="2.3951e-5 2.3951e-5 3.2347e-5"/>
+      <body name="cf_mocap_num2" pos="0.0 0.0 0.013" >
+        <geom mesh="cf2_0" material="propeller_plastic" class="visual"/>
+        <geom mesh="cf2_1" material="medium_gloss_plastic" class="visual"/>
+        <geom mesh="cf2_2" material="polished_gold" class="visual"/>
+        <geom mesh="cf2_3" material="polished_plastic" class="visual"/>
+        <geom mesh="cf2_4" material="burnished_chrome" class="visual"/>
+        <geom mesh="cf2_5" material="body_frame_plastic" class="visual"/>
+        <geom mesh="cf2_6" material="white" class="visual"/>
+        <inertial euler="0 0 0" pos="0 0 0" mass="1e-09" diaginertia="1e-09 1e-09 1e-09"/>
+        <joint name="cf_mocap_num2" type="slide" axis="1 0 0" range="-0.01 0.01"/>
+      </body>
+    </body>
+    <!-- crazyflie -->
+    <body name="cf2_num3" pos="0 0 0" childclass="cf2">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.027" diaginertia="2.3951e-5 2.3951e-5 3.2347e-5"/>
+      <body name="cf_mocap_num3" pos="0.0 0.0 0.013" >
+        <geom mesh="cf2_0" material="propeller_plastic" class="visual"/>
+        <geom mesh="cf2_1" material="medium_gloss_plastic" class="visual"/>
+        <geom mesh="cf2_2" material="polished_gold" class="visual"/>
+        <geom mesh="cf2_3" material="polished_plastic" class="visual"/>
+        <geom mesh="cf2_4" material="burnished_chrome" class="visual"/>
+        <geom mesh="cf2_5" material="body_frame_plastic" class="visual"/>
+        <geom mesh="cf2_6" material="white" class="visual"/>
+        <inertial euler="0 0 0" pos="0 0 0" mass="1e-09" diaginertia="1e-09 1e-09 1e-09"/>
+        <joint name="cf_mocap_num3" type="slide" axis="1 0 0" range="-0.01 0.01"/>
+      </body>
+    </body>
+    <!-- crazyflie -->
+    <body name="cf2_num4" pos="0 0 0" childclass="cf2">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.027" diaginertia="2.3951e-5 2.3951e-5 3.2347e-5"/>
+      <body name="cf_mocap_num4" pos="0.0 0.0 0.013" >
+        <geom mesh="cf2_0" material="propeller_plastic" class="visual"/>
+        <geom mesh="cf2_1" material="medium_gloss_plastic" class="visual"/>
+        <geom mesh="cf2_2" material="polished_gold" class="visual"/>
+        <geom mesh="cf2_3" material="polished_plastic" class="visual"/>
+        <geom mesh="cf2_4" material="burnished_chrome" class="visual"/>
+        <geom mesh="cf2_5" material="body_frame_plastic" class="visual"/>
+        <geom mesh="cf2_6" material="white" class="visual"/>
+        <inertial euler="0 0 0" pos="0 0 0" mass="1e-09" diaginertia="1e-09 1e-09 1e-09"/>
+        <joint name="cf_mocap_num4" type="slide" axis="1 0 0" range="-0.01 0.01"/>
+      </body>
+    </body>
+    <!-- crazyflie -->
+    <body name="cf2_num5" pos="0 0 0" childclass="cf2">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.027" diaginertia="2.3951e-5 2.3951e-5 3.2347e-5"/>
+      <body name="cf_mocap_num5" pos="0.0 0.0 0.013" >
+        <geom mesh="cf2_0" material="propeller_plastic" class="visual"/>
+        <geom mesh="cf2_1" material="medium_gloss_plastic" class="visual"/>
+        <geom mesh="cf2_2" material="polished_gold" class="visual"/>
+        <geom mesh="cf2_3" material="polished_plastic" class="visual"/>
+        <geom mesh="cf2_4" material="burnished_chrome" class="visual"/>
+        <geom mesh="cf2_5" material="body_frame_plastic" class="visual"/>
+        <geom mesh="cf2_6" material="white" class="visual"/>
+        <inertial euler="0 0 0" pos="0 0 0" mass="1e-09" diaginertia="1e-09 1e-09 1e-09"/>
+        <joint name="cf_mocap_num5" type="slide" axis="1 0 0" range="-0.01 0.01"/>
+      </body>
+    </body>
+    <!-- crazyflie -->
+    <body name="cf2_num6" pos="0 0 0" childclass="cf2">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.027" diaginertia="2.3951e-5 2.3951e-5 3.2347e-5"/>
+      <body name="cf_mocap_num6" pos="0.0 0.0 0.013" >
+        <geom mesh="cf2_0" material="propeller_plastic" class="visual"/>
+        <geom mesh="cf2_1" material="medium_gloss_plastic" class="visual"/>
+        <geom mesh="cf2_2" material="polished_gold" class="visual"/>
+        <geom mesh="cf2_3" material="polished_plastic" class="visual"/>
+        <geom mesh="cf2_4" material="burnished_chrome" class="visual"/>
+        <geom mesh="cf2_5" material="body_frame_plastic" class="visual"/>
+        <geom mesh="cf2_6" material="white" class="visual"/>
+        <inertial euler="0 0 0" pos="0 0 0" mass="1e-09" diaginertia="1e-09 1e-09 1e-09"/>
+        <joint name="cf_mocap_num6" type="slide" axis="1 0 0" range="-0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position joint="platform_pitch" kp="20" ctrllimited="true" ctrlrange="-3.14 3.14"/>
+  </actuator>
+
+</mujoco>

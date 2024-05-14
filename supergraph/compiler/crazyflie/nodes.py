@@ -231,7 +231,7 @@ class PPOAgentParams(base.Base):
         return action
 
     @staticmethod
-    def get_observation(pos, vel, att, pos_plat=None, vel_plat=None, att_plat=None, pos_offset=None, prev_action=None) -> jax.Array:
+    def get_observation(pos, vel, att, pos_plat=None, vel_plat=None, att_plat=None, pos_offset=None) -> jax.Array:
         """Get observation from position, velocity and attitude.
 
         Either pos, vel, att are of shape (3,) or (window_size, 3),
@@ -312,9 +312,6 @@ class PPOAgentParams(base.Base):
                 obs = jnp.concatenate([obs, vel_isia])
         else:
             obs = jnp.concatenate([pos_cfiw, vel_cfiw, att_cf2w])  # All in agent frame
-
-        if prev_action is not None:
-            obs = jnp.concatenate([obs, prev_action])
         return obs
 
     def to_output(self, action: jax.Array, z_plat: Union[float, jax.typing.ArrayLike]) -> AttitudeControllerOutput:
@@ -519,6 +516,7 @@ class ZPIDState(base.Base):
     lpfThetaRef: LPFObject
     lpfZRef: LPFObject
 
+
 @struct.dataclass
 class ZPIDParams(base.Base):
     # Other
@@ -687,7 +685,9 @@ class Sentinel(BaseNode):
 
         # Inclination
         if params.init_plat == "random":
-            vx, vy = jax.random.uniform(rngs[4], shape=(2,), minval=0.0, maxval=params.vel_plat_max)
+            vx, vy = jax.random.uniform(rngs[4], shape=(2,),
+                                        minval=-params.vel_plat_max,
+                                        maxval=params.vel_plat_max)
             init_vel_plat = jnp.array([vx, vy, 0.0])
             polar = jax.random.uniform(rngs[5], shape=(), minval=params.polar_range[0], maxval=params.polar_range[1])
             azimuth = jax.random.uniform(rngs[6], shape=(), minval=-params.azimuth_max, maxval=params.azimuth_max)
@@ -817,22 +817,19 @@ class OdeWorld(BaseNode):
         for _ in range(self.substeps):
             next_state = self._runge_kutta4(self._ode_crazyflie, self.dt_substeps, params, next_state, action)
 
-        # Clip position & velocity
-        next_state = next_state.replace(pos=jnp.clip(next_state.pos, -params.clip_pos, params.clip_pos))
-        next_state = next_state.replace(vel=jnp.clip(next_state.vel, -params.clip_vel, params.clip_vel))
+        # Clip positions relative to the platform
+        pos_rel = jnp.clip(next_state.pos - next_state.pos_plat, -params.clip_pos, params.clip_pos) + next_state.pos_plat
+        vel = jnp.clip(next_state.vel, -params.clip_vel, params.clip_vel)
+        next_state = next_state.replace(vel=vel, pos=pos_rel)
 
         # Update state
         new_step_state = step_state.replace(state=next_state)
-
-        # Correct for negative roll w.r.t brax & vicon convention
-        # att = new_step_state.state.att.at[0].multiply(-1)  # todo: PHI SIGN: check if this is necessary
-        att = new_step_state.state.att
 
         # Prepare output
         output = WorldOutput(
             pos=new_step_state.state.pos,
             vel=new_step_state.state.vel,
-            att=att,
+            att=new_step_state.state.att,
             ang_vel=new_step_state.state.ang_vel,
             thrust_state=new_step_state.state.thrust_state,
             pos_plat=new_step_state.state.pos_plat,
@@ -925,7 +922,7 @@ class OdeWorld(BaseNode):
         A, B, C, D = params.state_space
         pwm_constants = params.pwm_constants
         dragxy_c = params.dragxy_constants  # [9.1785e-7, 0.04076521, 380.8359] # Fa,x
-        dragz_c = params.dragz_constants # [10.311e-7, 0.04076521, 380.8359] # Fa,z
+        dragz_c = params.dragz_constants  # [10.311e-7, 0.04076521, 380.8359] # Fa,z
         # Unpack state
         x, y, z = state.pos
         xdot, ydot, zdot = state.vel
@@ -979,9 +976,9 @@ class OdeWorld(BaseNode):
         dang_vel = jnp.array([0.0, 0.0, 0.0])  # No angular velocity
         dthrust_state = A * thrust_state + B * pwm  # Thrust_state dot
         dmass = 0.0  # No mass change
-        dpos_plat = jnp.array([0.0, 0.0, 0.0])
+        dpos_plat = state.vel_plat
         datt_plat = jnp.array([0.0, 0.0, 0.0])
-        dvel_plat = jnp.array([0.0, 0.0, 0.0])
+        dvel_plat = jnp.array([0.0, 0.0, 0.0])  # Constant velocity
         dstate = OdeState(mass=dmass, pos=dpos, vel=dvel, att=datt, ang_vel=dang_vel, thrust_state=dthrust_state,
                           pos_plat=dpos_plat, att_plat=datt_plat, vel_plat=dvel_plat)
         return dstate
@@ -1041,7 +1038,7 @@ class MoCap(BaseNode):
             vel=world.vel + use_noise*vel_noise,
             att=world.att + use_noise*att_noise,
             ang_vel=world.ang_vel + use_noise*ang_vel_noise,
-            pos_plat=world.pos_plat + use_noise*pos_plat_noise + jnp.array([0.0, 0.0, 0.0]),
+            pos_plat=world.pos_plat + use_noise*pos_plat_noise,
             att_plat=world.att_plat + use_noise*att_plat_noise,
             vel_plat=world.vel_plat + use_noise*vel_plat_noise,
         )
@@ -1361,10 +1358,10 @@ class PPOAgent(RandomAgent):
     @staticmethod
     def get_observation(step_state: base.StepState) -> jax.Array:
         mocap = step_state.inputs["mocap"][-1].data
-        prev_action = step_state.state.prev_action
-        obs = step_state.params.get_observation(pos=mocap.pos, vel=mocap.vel, att=mocap.att,
-                                                pos_plat=mocap.pos_plat, att_plat=mocap.att_plat
-                                                )
+        obs = step_state.params.get_observation(
+            pos=mocap.pos, vel=mocap.vel, att=mocap.att,
+            pos_plat=mocap.pos_plat, vel_plat=mocap.vel_plat, att_plat=mocap.att_plat,
+        )
         return obs
 
     @staticmethod
@@ -1997,16 +1994,22 @@ class InclinedLanding(Environment):
         dtheta_ref = theta_ref - prev_output.theta_ref
         dpsi_ref = psi_ref - prev_output.psi_ref
 
+        # Decouple error
+        error_dangle_decouple = jnp.abs(dphi_ref) * jnp.abs(dtheta_ref)
+
         # Delta action cost
-        error_dangle_ref = 7*jnp.sqrt(dphi_ref**2 + dtheta_ref**2 + dpsi_ref**2) # todo: Remove harcoded scaling parameter
+        error_dangle_ref = 7*jnp.sqrt(dphi_ref**2 + dtheta_ref**2 + dpsi_ref**2)  # todo: Remove harcoded scaling parameter
         error_dz_ref = 7*jnp.sqrt(dz_ref**2)  # todo: Remove harcoded scaling parameter
         # error_daction = (0.2 * error_dz_ref + 0.6 * error_dangle_ref)  # Penalize delta action more.
         # act_z_error = z_ref ** 2
 
         # Get current state
         world_state: OdeState = self.get_step_state(graph_state, "world").state
-        pos_target = jnp.array([0., 0., 0.])  # Final position target
-        pos_error = jnp.linalg.norm(pos_target - world_state.pos)
+        vel_rel = world_state.vel - world_state.vel_plat  # Calculate relative velocity vector
+        pos_rel = world_state.pos - world_state.pos_plat  # Calculate relative position vector
+
+        # Calculate position error
+        pos_error = jnp.linalg.norm(pos_rel)
 
         # Get rotation matrices
         R_cf2w_ref = rpy_to_R(att_ref)
@@ -2023,19 +2026,16 @@ class InclinedLanding(Environment):
         # Calculate components of the landing velocity
         ss_sentinel = self.get_step_state(graph_state, "sentinel")
         vel_land_ref = -z_is * ss_sentinel.params.vel_land  # target is landing velocity in negative direction of platform z-axis
-        vel_land_error = jnp.linalg.norm(vel_land_ref-world_state.vel)
-        # z_cf_xy = jnp.array([z_cf[0], z_cf[1], 0]) / jnp.linalg.norm(jnp.array([z_cf[0], z_cf[1], 0]))  # Project z-axis to xy-plane
-        # vel_underact = jnp.clip(jnp.dot(z_cf, world_state.vel), None, 0)   # Promote underactuated motion (i.e. velocity in negative z-axis)
-        # vel_underact = jnp.clip(jnp.dot(z_cf_xy, world_state.vel), None, 0)   # Promote underactuated motion (i.e. velocity in negative z-axis)
-        vxyz_error = jnp.linalg.norm(world_state.vel - jnp.dot(z_is, world_state.vel) * z_is)
+        vel_land_error = jnp.linalg.norm(vel_land_ref-vel_rel)
+        vxyz_error = jnp.linalg.norm(vel_rel - jnp.dot(z_is, vel_rel) * z_is)
 
         cf_is_align = 7*jnp.clip(jnp.dot(z_cf, z_is), 0, None)  # todo: remove hardcoded scaling parameter
-        vel_cf_align = jnp.clip(jnp.dot(z_cf, world_state.vel), None, 0)
+        vel_cf_align = jnp.clip(jnp.dot(z_cf, vel_rel), None, 0)
         proximity = pos_error < 0.3
-        vel_underact = cf_is_align * vel_cf_align * (world_state.pos[2] > 0.) * proximity
+        vel_underact = cf_is_align * vel_cf_align * (pos_rel[2] > 0.) * proximity
 
         # Penalize being on the negative side of the platform
-        pos_cfiis = R_is2w.T @ (world_state.pos - world_state.pos_plat)
+        pos_cfiis = R_is2w.T @ pos_rel
         z_cfiis = pos_cfiis[2]
         z_underplat = jnp.clip(z_cfiis, None, 0)  # Only penalize if below the platform
         mag_xy_cfiis = jnp.clip(jnp.linalg.norm(pos_cfiis[:2]), 0.01, None)  # Get magnitude of x and y components
@@ -2056,13 +2056,12 @@ class InclinedLanding(Environment):
         k1, k2, k3, k4 = self._rwd_params.k1, self._rwd_params.k2, self._rwd_params.k3, self._rwd_params.k4
         f1, f2 = self._rwd_params.f1, self._rwd_params.f2
         fp = self._rwd_params.fp
-        p = self._rwd_params.p
         pos_perfect = (pos_error < 0.05)
         att_perfect = (att_error < 0.1)
         vel_perfect = (vel_land_error < 0.5)
         is_perfect = pos_perfect * att_perfect * vel_perfect
         # cost_eps = pos_error + k1*att_error + k2*vxyz_error + k3*vel_underact + k1*act_att_error + k4*act_z_error
-        cost_eps = pos_error + k1*att_error + k2*vxyz_error + k3*vel_underact + k1*error_dangle_ref + k4*error_dz_ref + 10 * error_underplat
+        cost_eps = pos_error + k1*att_error + k2*vxyz_error + k3*vel_underact + k1*error_dangle_ref + k4*error_dz_ref + 10 * error_underplat + 20 * error_dangle_decouple
         cost_final = pos_error + f1*att_error + f2*vel_land_error
         cost_perfect = -fp * is_perfect
 
